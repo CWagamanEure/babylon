@@ -29,6 +29,10 @@ class Ledger:
         self._start = starting_equity
         self._pos: dict[tuple[str, str], Position] = defaultdict(Position)
 
+    @property
+    def starting_equity(self) -> Decimal:
+        return self._start
+
     def position(self, strategy: str, coin: str) -> Decimal:
         pos = self._pos.get((strategy, coin))  # read without creating an entry
         return pos.size if pos else Decimal(0)

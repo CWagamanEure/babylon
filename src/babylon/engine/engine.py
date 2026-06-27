@@ -43,6 +43,7 @@ from babylon.risk.manager import RiskManager
 from babylon.risk.net import NetRiskManager
 from babylon.sizing.edge import EdgeModel
 from babylon.sizing.sizer import Sizer
+from babylon.stats.monitor import ACCOUNT, PerformanceMonitor
 from babylon.strategy.base import Strategy
 
 log = get_logger("engine")
@@ -95,6 +96,7 @@ class Engine:
         self._interval = interval_s
         self._exposure_mon = exposure or ExposureMonitor()
         self._exposure: BookExposure | None = None
+        self._perf = PerformanceMonitor()
         self._stop = asyncio.Event()
         self._fills = 0
 
@@ -126,6 +128,26 @@ class Engine:
     def exposure(self) -> BookExposure | None:
         """Latest book exposure snapshot (net directional, concentration, neutrality)."""
         return self._exposure
+
+    @property
+    def performance(self) -> PerformanceMonitor:
+        """Per-strategy + account equity curves and their tail-aware metrics."""
+        return self._perf
+
+    def _strategy_equities(self, marks: dict[str, Decimal], equity: Decimal) -> dict[str, float]:
+        """Mark-to-market equity per strategy (budget base + realized + unrealized)
+        plus the account total — the curves the measurement layer judges."""
+        pnl: dict[str, Decimal] = {}
+        for s, c, size, entry, realized in self._ledger.positions():
+            pnl[s] = pnl.get(s, Decimal(0)) + realized
+            if c in marks:
+                pnl[s] += (marks[c] - entry) * size
+        start = self._ledger.starting_equity
+        out: dict[str, float] = {ACCOUNT: float(equity)}
+        for strat in self._strategies:
+            base = Decimal(str(self._budgets.get(strat.name, 0.0))) * start
+            out[strat.name] = float(base + pnl.get(strat.name, Decimal(0)))
+        return out
 
     # --- durable state (snapshot / restore) ----------------------------------
 
@@ -416,6 +438,8 @@ class Engine:
         self._exposure = self._exposure_mon.assess(
             self._executor.net_positions(), marks, equity
         )
+        # Sample per-strategy + account equity curves for the measurement layer.
+        self._perf.sample(self._strategy_equities(marks, equity))
 
         log.info(
             "engine.tick",
