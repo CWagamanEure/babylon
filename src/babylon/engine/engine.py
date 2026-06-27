@@ -71,9 +71,16 @@ class Engine:
         interval_s: float = 2.0,
         exposure: ExposureMonitor | None = None,
         run_id: str = "",
+        journal: Any = None,
+        seed: int = 0,
+        snapshot_every: int = 10,
     ) -> None:
         self._feed = feed
         self._run_id = run_id
+        self._journal = journal
+        self._seed = seed
+        self._snapshot_every = snapshot_every
+        self._tick_id = 0
         self._market = market
         self._strategies = strategies
         self._by_name = {s.name: s for s in strategies}
@@ -179,6 +186,16 @@ class Engine:
         self._feed.on("l2Book", self._on_book)
         for c in self._coins:
             self._feed.subscribe(Subscription(type="l2Book", coin=c))
+        if self._journal is not None:
+            # Journal lives on this (the event-loop) thread; the brief FULL-fsync
+            # per order/fill is acceptable at paper cadence. Off-loop single-writer
+            # thread is the documented live optimisation.
+            self._journal.connect()
+            self._recover()
+            self._journal.begin_run(
+                self._run_id, started_ms=self._clock.now(), network="",
+                seed=self._seed, roster=[s.name for s in self._strategies],
+            )
         for s in self._strategies:
             s.on_start(self._context(s, {}, self._ledger_equity({})))
         feed_task = asyncio.create_task(self._feed.run())
@@ -187,6 +204,8 @@ class Engine:
                 await asyncio.sleep(self._interval)
                 try:
                     self._tick()
+                    if self._journal is not None and self._tick_id % self._snapshot_every == 0:
+                        self.record_snapshot(self._journal, self._clock.now())
                 except Exception:  # noqa: BLE001 — last-resort guard; per-strategy isolation is inside
                     log.exception("engine.tick_error")
         finally:
@@ -194,7 +213,41 @@ class Engine:
             self._feed.stop()
             for s in self._strategies:
                 s.on_stop(self._context(s, {}, self._ledger_equity({})))
+            if self._journal is not None:
+                self.record_snapshot(self._journal, self._clock.now())
+                self._journal.close()
             await asyncio.gather(feed_task, return_exceptions=True)
+
+    def _recover(self) -> None:
+        """Restore the latest snapshot + replay fills since, on boot. Paper: the
+        executor net is derived from the restored ledger."""
+        snap = self._journal.latest_snapshot()
+        if snap is None:
+            return
+        applied_seq, parts = snap
+        blob = parts.get(("engine", ""))
+        if blob is None:
+            return
+        prior = self._journal.last_run()
+        if prior is not None and (
+            prior["seed"] != self._seed
+            or prior["roster"] != sorted(s.name for s in self._strategies)
+        ):
+            log.warning("engine.recover_skipped_fingerprint_mismatch")
+            return
+        self.restore_state(json.loads(blob))
+        # Replay FILL events committed after the snapshot cut → advance the ledger.
+        for seq, kind, payload in self._journal.replay_events(applied_seq):
+            if kind != "FILL":
+                continue
+            p = json.loads(payload)
+            price = Decimal(p["price"])
+            for strat, size in p["shares"].items():
+                self._ledger.apply_fill(strat, p["coin"], Decimal(size), price)
+            self._last_applied_seq = seq
+        for coin in self._coins:
+            self._executor.set_position(coin, self._ledger.net_position(coin))
+        log.info("engine.recovered", applied_seq=self._last_applied_seq)
 
     def _ledger_equity(self, marks: dict[str, Decimal]) -> Decimal:
         return self._ledger.equity(marks)
@@ -210,6 +263,7 @@ class Engine:
         )
 
     def _tick(self) -> None:
+        self._tick_id += 1
         now = self._clock.now()
         marks = self._market.marks(self._coins)
         if not marks:
@@ -284,23 +338,36 @@ class Engine:
         for order in orders:
             quote = self._market.quote(order.coin)
             if quote is None:
-                continue
+                continue  # drop quote-less orders BEFORE journaling (no PENDING orphan)
+            # The share split is independent of fill price, so compute it from the
+            # order; journal the order + its intended vector BEFORE the send.
+            provisional = Fill(coin=order.coin, size=order.size, price=quote.mid,
+                               time=now, cloid=order.cloid)
+            shares = self._compute_shares(provisional, scaled)
+            order_id = 0
+            if self._journal is not None:
+                order_id = self._journal.record_order(
+                    order, dict(shares), run_id=self._run_id, tick=self._tick_id, now=now, wall=now)
             try:
                 fill = self._executor.submit(order, quote, now)
             except Exception:  # noqa: BLE001 — an executor failure must not desync state
                 log.exception("engine.submit_error", coin=order.coin)
                 continue
-            if fill is not None:
-                self._attribute(fill, scaled)
-                self._fills += 1
-                if self._ledger.net_position(order.coin) != self._executor.net_position(order.coin):
-                    log.error(
-                        "engine.invariant_break",
-                        coin=order.coin,
-                        ledger=str(self._ledger.net_position(order.coin)),
-                        executor=str(self._executor.net_position(order.coin)),
-                    )
-                    self._stop.set()
+            if fill is None:
+                continue
+            self._apply_shares(fill, shares)
+            self._fills += 1
+            if self._journal is not None:
+                self._last_applied_seq = self._journal.record_fill(
+                    order_id=order_id, cloid=fill.cloid, coin=fill.coin, price=fill.price,
+                    shares=shares, run_id=self._run_id, tick=self._tick_id, now=now, wall=now)
+            if self._ledger.net_position(order.coin) != self._executor.net_position(order.coin):
+                log.error(
+                    "engine.invariant_break", coin=order.coin,
+                    ledger=str(self._ledger.net_position(order.coin)),
+                    executor=str(self._executor.net_position(order.coin)),
+                )
+                self._stop.set()
 
         # Measure the actual book we now hold (tracks; does not enforce).
         self._exposure = self._exposure_mon.assess(
@@ -379,9 +446,9 @@ class Engine:
             shares.append((strat, share))
         return shares
 
-    def _attribute(self, fill: Fill, scaled: dict[tuple[str, str], Decimal]) -> None:
-        """Apply the computed share vector to the ledgers and notify strategies."""
-        for strat, share in self._compute_shares(fill, scaled):
+    def _apply_shares(self, fill: Fill, shares: list[tuple[str, Decimal]]) -> None:
+        """Apply a computed share vector to the ledgers and notify strategies."""
+        for strat, share in shares:
             self._ledger.apply_fill(strat, fill.coin, share, fill.price)
             s = self._by_name.get(strat)
             if s is not None:
@@ -395,3 +462,7 @@ class Engine:
                         strategy=strat,
                     )
                 )
+
+    def _attribute(self, fill: Fill, scaled: dict[tuple[str, str], Decimal]) -> None:
+        """Compute + apply (used by the non-journal path / tests)."""
+        self._apply_shares(fill, self._compute_shares(fill, scaled))

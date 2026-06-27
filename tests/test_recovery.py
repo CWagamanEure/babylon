@@ -22,15 +22,52 @@ COIN = "BTC"
 STRAT = "ma_BTC_2_3"
 
 
-def _engine(rng, market, clock, executor, ledger):
+def _engine(rng, market, clock, executor, ledger, *, journal=None, run_id="", seed=0):
     strat = MACrossover(COIN, fast=2, slow=3, prior_mean=0.002, prior_std=0.004, prior_strength=200)
     return Engine(
         feed=WebSocketFeed(url="wss://example/ws"), market=market, strategies=[strat],
         sizer=Sizer(fractional=0.25), risk=RiskManager(per_asset_cap=0.5),
         net_risk=NetRiskManager(max_leverage=1.0, gross_cap=10.0, max_drawdown=0.9),
-        reconciler=Reconciler(min_trade_notional=Decimal(1)), executor=executor,
+        reconciler=Reconciler(min_trade_notional=Decimal(1), run_id=run_id), executor=executor,
         ledger=ledger, clock=clock, budgets={strat.name: 1.0}, rng=rng, interval_s=0.0,
+        journal=journal, run_id=run_id, seed=seed,
     )
+
+
+def test_crash_replay_recovers_to_last_fill(tmp_path):
+    # Live-journal fills, snapshot partway, journal MORE fills, then "crash" with
+    # no final snapshot. Recovery must reach the LAST fill (replay), not the snapshot.
+    j = Journal(tmp_path / "j.db")
+    j.connect()
+    j.begin_run("r1", started_ms=1, network="t", seed=3, roster=[STRAT])
+    mkt, clk, ex, led = MarketView(), SimClock(), PaperExecutor(), Ledger(Decimal(100_000))
+    a = _engine(np.random.default_rng(3), mkt, clk, ex, led, journal=j, run_id="r1", seed=3)
+
+    def step(prices, t0):
+        for i, p in enumerate(prices):
+            clk.advance_to(t0 + (i + 1) * 1000)
+            px = Decimal(str(p))
+            mkt.update(COIN, px - Decimal("0.5"), px + Decimal("0.5"))
+            a._tick()
+        return t0 + len(prices) * 1000
+
+    t = step([100, 101, 102, 103], 0)   # warmup + fills
+    a.record_snapshot(j, now=clk.now())  # snapshot at this cut
+    step([104, 105, 106], t)             # MORE fills, only in the event log
+    pos_before_crash = led.net_position(COIN)
+    j.close()  # release the writer lock (simulate process death; no final snapshot)
+
+    # --- restart: fresh engine recovers from the same journal
+    j2 = Journal(tmp_path / "j.db")
+    ex_b, led_b = PaperExecutor(), Ledger(Decimal(100_000))
+    b = _engine(np.random.default_rng(3), MarketView(), SimClock(), ex_b, led_b,
+                journal=j2, run_id="r2", seed=3)
+    j2.connect()
+    b._recover()
+    # restore_state replaces the ledger object → read it from the engine.
+    assert b._ledger.net_position(COIN) == pos_before_crash  # replayed past the snapshot
+    assert ex_b.net_position(COIN) == pos_before_crash       # executor net derived from ledger
+    j2.close()
 
 
 def _drive(engine, market, clock, prices):

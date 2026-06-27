@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import uuid
 from collections.abc import Callable, Coroutine
 from decimal import Decimal
 from typing import Any
@@ -35,6 +36,7 @@ from babylon.exchange.constants import endpoints_for
 from babylon.exchange.rest import InfoClient
 from babylon.exchange.websocket import Subscription, WebSocketFeed
 from babylon.execution.paper import PaperExecutor
+from babylon.journal.journal import Journal
 from babylon.logging import configure_logging, get_logger
 from babylon.portfolio.ledger import Ledger
 from babylon.portfolio.reconcile import Reconciler
@@ -206,11 +208,15 @@ def paper(
     slow: int = typer.Option(30, help="Slow MA window"),
     interval: float = typer.Option(2.0, help="Evaluation cadence (seconds)"),
     seed: int = typer.Option(0, help="RNG seed (reproducible sizing)"),
+    journal: str = typer.Option(
+        "", help="Journal DB path — enables crash recovery + per-strategy trade record"
+    ),
 ) -> None:
     """Run the MA-crossover toy strategy in PAPER mode on the live feed.
 
     No signing, no real orders — the full engine pipeline (sizing → risk → net
-    risk → reconcile → paper fills → ledger) on real prices.
+    risk → reconcile → paper fills → ledger) on real prices. With --journal, every
+    order/fill is durably recorded and state survives a restart.
     """
     _bootstrap()
     if fast >= slow:
@@ -220,6 +226,8 @@ def paper(
     ep = endpoints_for(s.network)
     rng = np.random.default_rng(seed)
     feed = WebSocketFeed(url=ep.ws)
+    run_id = uuid.uuid4().hex[:12]
+    jrnl = Journal(journal) if journal else None
     strategies = [MACrossover(c, fast=fast, slow=slow) for c in coin]
     budgets = {st.name: 1.0 / len(strategies) for st in strategies}
     engine = Engine(
@@ -229,15 +237,19 @@ def paper(
         sizer=Sizer(),
         risk=RiskManager(),
         net_risk=NetRiskManager(),
-        reconciler=Reconciler(),
+        reconciler=Reconciler(run_id=run_id),
         executor=PaperExecutor(),
         ledger=Ledger(Decimal(str(equity))),
         clock=RealClock(),
         budgets=budgets,
         rng=rng,
         interval_s=interval,
+        journal=jrnl,
+        run_id=run_id,
+        seed=seed,
     )
-    log.info("paper.start", coins=coin, equity=equity, network=s.network.value)
+    log.info("paper.start", coins=coin, equity=equity, network=s.network.value,
+             run_id=run_id, journal=journal or None)
     _run_engine(engine)
 
 

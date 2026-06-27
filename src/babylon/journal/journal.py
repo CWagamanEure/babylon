@@ -255,7 +255,8 @@ class Journal:
             "INSERT INTO events(run_id,ts_ms,wall_ms,tick,kind,coin,cloid,payload) "
             "VALUES(?,?,?,?,'FILL',?,?,?)",
             (run_id, now, wall, tick, coin, cloid,
-             json.dumps({"price": str(price), "shares": {s: str(v) for s, v in shares}})),
+             json.dumps({"coin": coin, "price": str(price),
+                         "shares": {s: str(v) for s, v in shares}})),
         )
         seq = int(cur.lastrowid or 0)
         total = Decimal(0)
