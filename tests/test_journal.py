@@ -64,8 +64,8 @@ def test_snapshot_single_cut_and_latest(tmp_path):
                parts={("ledger", ""): b"L2", ("edge", "BTC/s1"): b"E2"})
     got = j.latest_snapshot()
     assert got is not None
-    applied_seq, parts = got
-    assert applied_seq == 12
+    applied_seq, run_id, parts = got
+    assert applied_seq == 12 and run_id == "r1"
     # Latest snapshot has ALL components at the one cut (the v2 split bug).
     assert parts[("ledger", "")] == b"L2" and parts[("edge", "BTC/s1")] == b"E2"
 
@@ -78,6 +78,35 @@ def test_replay_after_seq_ordered(tmp_path):
                    run_id="r1", tick=2, now=2, wall=2)
     seqs = [seq for seq, _kind, _payload in j.replay_events(0)]
     assert seqs == sorted(seqs) and len(seqs) == 2
+
+
+def test_failed_write_rolls_back_no_orphan(tmp_path):
+    import sqlite3
+
+    j = _journal(tmp_path)
+    # order_id 99999 doesn't exist → FK violation mid record_fill → whole txn rolls back.
+    with pytest.raises(sqlite3.IntegrityError):
+        j.record_fill(order_id=99999, cloid="x", coin="BTC", price=Decimal("1"),
+                      shares=[("s1", Decimal("1"))], run_id="r1", tick=1, now=1, wall=1)
+    # The FILL event must NOT be durable, and a later write stays clean (no orphan
+    # merged into the next commit).
+    assert j._c.execute("SELECT COUNT(*) FROM events WHERE kind='FILL'").fetchone()[0] == 0
+    j.record_order(_order(), {"s1": Decimal("1")}, run_id="r1", tick=1, now=1, wall=1)
+    assert j._c.execute("SELECT COUNT(*) FROM events WHERE kind='FILL'").fetchone()[0] == 0
+
+
+def test_filled_accumulates_and_partial_status(tmp_path):
+    j = _journal(tmp_path)
+    oid = j.record_order(_order(size="2"), {"s1": Decimal("2")},
+                         run_id="r1", tick=1, now=1, wall=1)
+    j.record_fill(order_id=oid, cloid="r:BTC:1", coin="BTC", price=Decimal("1"),
+                  shares=[("s1", Decimal("1.2"))], run_id="r1", tick=1, now=1, wall=1)
+    assert j._c.execute("SELECT status, filled_e8 FROM orders WHERE order_id=?",
+                        (oid,)).fetchone() == ("PARTIAL", to_e8(Decimal("1.2")))
+    j.record_fill(order_id=oid, cloid="r:BTC:1", coin="BTC", price=Decimal("1"),
+                  shares=[("s1", Decimal("0.8"))], run_id="r1", tick=2, now=2, wall=2)
+    assert j._c.execute("SELECT status, filled_e8 FROM orders WHERE order_id=?",
+                        (oid,)).fetchone() == ("FILLED", to_e8(Decimal("2")))
 
 
 def test_flock_refuses_second_writer(tmp_path):

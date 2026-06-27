@@ -226,7 +226,7 @@ def paper(
     ep = endpoints_for(s.network)
     rng = np.random.default_rng(seed)
     feed = WebSocketFeed(url=ep.ws)
-    run_id = uuid.uuid4().hex[:12]
+    run_id = uuid.uuid4().hex  # full 128-bit (no PK-collision crash at boot)
     jrnl = Journal(journal) if journal else None
     strategies = [MACrossover(c, fast=fast, slow=slow) for c in coin]
     budgets = {st.name: 1.0 / len(strategies) for st in strategies}

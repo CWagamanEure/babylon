@@ -168,11 +168,25 @@ class Journal:
         self, run_id: str, *, started_ms: int, network: str, seed: int,
         roster: list[str], code_hash: str = "",
     ) -> None:
-        self._c.execute(
-            "INSERT INTO runs(run_id,started_ms,network,seed,roster,code_hash) VALUES(?,?,?,?,?,?)",
-            (run_id, started_ms, network, seed, json.dumps(sorted(roster)), code_hash),
-        )
-        self._c.commit()
+        with self._c:
+            self._c.execute(
+                "INSERT INTO runs(run_id,started_ms,network,seed,roster,code_hash) "
+                "VALUES(?,?,?,?,?,?)",
+                (run_id, started_ms, network, seed, json.dumps(sorted(roster)), code_hash),
+            )
+
+    def record_event(
+        self, kind: str, payload: dict[str, Any], *, run_id: str, tick: int, now: int,
+        wall: int, coin: str | None = None, strategy: str | None = None,
+    ) -> int:
+        """Journal a non-order/fill state transition (QUARANTINE/HALT/RESET) so the
+        latch survives a mid-snapshot-interval crash (replayed in recovery)."""
+        with self._c:
+            return int(self._c.execute(
+                "INSERT INTO events(run_id,ts_ms,wall_ms,tick,kind,coin,strategy,payload) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (run_id, now, wall, tick, kind, coin, strategy, json.dumps(payload)),
+            ).lastrowid or 0)
 
     def _ensure_strategy(self, name: str, now: int) -> None:
         self._c.execute(
@@ -186,17 +200,17 @@ class Journal:
         manifest: dict[str, Any] | None = None,
     ) -> None:
         """Upsert the strategy's identity/allocation/status; bumps last_seen."""
-        self._c.execute(
-            "INSERT INTO strategies"
-            "(strategy,universe,budget,status,first_seen_ms,last_seen_ms,manifest) "
-            "VALUES(?,?,?,?,?,?,?) "
-            "ON CONFLICT(strategy) DO UPDATE SET universe=excluded.universe, "
-            "budget=excluded.budget, status=excluded.status, "
-            "last_seen_ms=excluded.last_seen_ms, manifest=excluded.manifest",
-            (name, json.dumps(sorted(universe)), str(budget), status, now, now,
-             json.dumps(manifest or {})),
-        )
-        self._c.commit()
+        with self._c:  # commit on success, rollback on error (no orphan-into-next-commit)
+            self._c.execute(
+                "INSERT INTO strategies"
+                "(strategy,universe,budget,status,first_seen_ms,last_seen_ms,manifest) "
+                "VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(strategy) DO UPDATE SET universe=excluded.universe, "
+                "budget=excluded.budget, status=excluded.status, "
+                "last_seen_ms=excluded.last_seen_ms, manifest=excluded.manifest",
+                (name, json.dumps(sorted(universe)), str(budget), status, now, now,
+                 json.dumps(manifest or {})),
+            )
 
     def write_positions(
         self, *, applied_seq: int, ts_ms: int,
@@ -205,18 +219,18 @@ class Journal:
         """Refresh the per-strategy positions cache from the ledger (strategy, coin,
         size, entry, realized). Upsert — closed positions keep their realized PnL."""
         c = self._c
-        for strat, coin, size, entry, realized in rows:
-            self._ensure_strategy(strat, ts_ms)
-            c.execute(
-                "INSERT INTO positions"
-                "(strategy,coin,size_e8,entry_e8,realized_e8,applied_seq,updated_ms) "
-                "VALUES(?,?,?,?,?,?,?) "
-                "ON CONFLICT(strategy,coin) DO UPDATE SET size_e8=excluded.size_e8, "
-                "entry_e8=excluded.entry_e8, realized_e8=excluded.realized_e8, "
-                "applied_seq=excluded.applied_seq, updated_ms=excluded.updated_ms",
-                (strat, coin, to_e8(size), to_e8(entry), to_e8(realized), applied_seq, ts_ms),
-            )
-        c.commit()
+        with c:
+            for strat, coin, size, entry, realized in rows:
+                self._ensure_strategy(strat, ts_ms)
+                c.execute(
+                    "INSERT INTO positions"
+                    "(strategy,coin,size_e8,entry_e8,realized_e8,applied_seq,updated_ms) "
+                    "VALUES(?,?,?,?,?,?,?) "
+                    "ON CONFLICT(strategy,coin) DO UPDATE SET size_e8=excluded.size_e8, "
+                    "entry_e8=excluded.entry_e8, realized_e8=excluded.realized_e8, "
+                    "applied_seq=excluded.applied_seq, updated_ms=excluded.updated_ms",
+                    (strat, coin, to_e8(size), to_e8(entry), to_e8(realized), applied_seq, ts_ms),
+                )
 
     def record_order(
         self, order: Order, shares: dict[str, Decimal], *,
@@ -225,23 +239,23 @@ class Journal:
         """Pre-send: journal the order + its intended share vector in ONE fsync'd
         transaction. Returns order_id. Must complete before the order is sent."""
         c = self._c
-        cur = c.execute(
-            "INSERT INTO events(run_id,ts_ms,wall_ms,tick,kind,coin,cloid,payload) "
-            "VALUES(?,?,?,?,'ORDER',?,?,?)",
-            (run_id, now, wall, tick, order.coin, order.cloid,
-             json.dumps({"size": str(order.size), "reduce_only": order.reduce_only})),
-        )
-        seq = cur.lastrowid
         shares_json = json.dumps({s: str(v) for s, v in shares.items()})
-        cur = c.execute(
-            "INSERT INTO orders"
-            "(run_id,seq,cloid,ts_ms,coin,size_e8,price_e8,reduce_only,tif,status,shares) "
-            "VALUES(?,?,?,?,?,?,?,?,?,'PENDING',?)",
-            (run_id, seq, order.cloid, now, order.coin, to_e8(order.size),
-             to_e8(order.price), int(order.reduce_only), order.tif.value, shares_json),
-        )
-        c.commit()  # fsync (synchronous=FULL) before the caller sends
-        return int(cur.lastrowid or 0)
+        with c:  # one fsync'd transaction; rolls back on any error
+            seq = c.execute(
+                "INSERT INTO events(run_id,ts_ms,wall_ms,tick,kind,coin,cloid,payload) "
+                "VALUES(?,?,?,?,'ORDER',?,?,?)",
+                (run_id, now, wall, tick, order.coin, order.cloid,
+                 json.dumps({"size": str(order.size), "price": str(order.price),
+                             "reduce_only": order.reduce_only, "shares": shares_json})),
+            ).lastrowid
+            order_id = c.execute(
+                "INSERT INTO orders"
+                "(run_id,seq,cloid,ts_ms,coin,size_e8,price_e8,reduce_only,tif,status,shares) "
+                "VALUES(?,?,?,?,?,?,?,?,?,'PENDING',?)",
+                (run_id, seq, order.cloid, now, order.coin, to_e8(order.size),
+                 to_e8(order.price), int(order.reduce_only), order.tif.value, shares_json),
+            ).lastrowid
+        return int(order_id or 0)
 
     def record_fill(
         self, *, order_id: int, cloid: str, coin: str, price: Decimal,
@@ -251,30 +265,34 @@ class Journal:
         """Post-fill: append a FILL event + one idempotent fills row per strategy
         share, set the order absolutely FILLED. One transaction. Returns seq."""
         c = self._c
-        cur = c.execute(
-            "INSERT INTO events(run_id,ts_ms,wall_ms,tick,kind,coin,cloid,payload) "
-            "VALUES(?,?,?,?,'FILL',?,?,?)",
-            (run_id, now, wall, tick, coin, cloid,
-             json.dumps({"coin": coin, "price": str(price),
-                         "shares": {s: str(v) for s, v in shares}})),
-        )
-        seq = int(cur.lastrowid or 0)
-        total = Decimal(0)
-        for strat, size in shares:
-            self._ensure_strategy(strat, now)
-            c.execute(
-                "INSERT INTO fills"
-                "(run_id,seq,order_id,ts_ms,coin,strategy,size_e8,price_e8,fee_e8,funding_e8) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(seq,strategy) DO NOTHING",
-                (run_id, seq, order_id, now, coin, strat, to_e8(size), to_e8(price),
-                 to_e8(fee), to_e8(funding)),
-            )
-            total += size
-        c.execute(
-            "UPDATE orders SET filled_e8=?, status='FILLED' WHERE order_id=?",
-            (to_e8(abs(total)), order_id),
-        )
-        c.commit()
+        payload = json.dumps({"coin": coin, "price": str(price), "fee": str(fee),
+                              "funding": str(funding),
+                              "shares": {s: str(v) for s, v in shares}})
+        with c:  # FILL event + per-strategy rows + order update, all-or-nothing
+            seq = int(c.execute(
+                "INSERT INTO events(run_id,ts_ms,wall_ms,tick,kind,coin,cloid,payload) "
+                "VALUES(?,?,?,?,'FILL',?,?,?)",
+                (run_id, now, wall, tick, coin, cloid, payload),
+            ).lastrowid or 0)
+            total = Decimal(0)
+            for strat, size in shares:
+                self._ensure_strategy(strat, now)
+                c.execute(
+                    "INSERT INTO fills"
+                    "(run_id,seq,order_id,ts_ms,coin,strategy,size_e8,price_e8,fee_e8,funding_e8) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(seq,strategy) DO NOTHING",
+                    (run_id, seq, order_id, now, coin, strat, to_e8(size), to_e8(price),
+                     to_e8(fee), to_e8(funding)),
+                )
+                total += size
+            # filled_e8 ACCUMULATES; status PARTIAL until cumulative == order size.
+            row = c.execute("SELECT size_e8, filled_e8 FROM orders WHERE order_id=?",
+                            (order_id,)).fetchone()
+            order_size_e8, prior_filled = (row or (0, 0))
+            new_filled = prior_filled + abs(to_e8(total) or 0)
+            status = "FILLED" if abs(new_filled) >= abs(order_size_e8) else "PARTIAL"
+            c.execute("UPDATE orders SET filled_e8=?, status=? WHERE order_id=?",
+                      (new_filled, status, order_id))
         return seq
 
     def snapshot(
@@ -282,35 +300,37 @@ class Journal:
     ) -> None:
         """Single-cut snapshot: all component parts at one applied_seq, one txn."""
         c = self._c
-        cur = c.execute(
-            "INSERT INTO snapshots(run_id,applied_seq,ts_ms) VALUES(?,?,?)",
-            (run_id, applied_seq, ts_ms),
-        )
-        snap_id = int(cur.lastrowid or 0)
-        for (component, scope), blob in parts.items():
-            c.execute(
-                "INSERT INTO snapshot_parts(snap_id,component,scope,state) VALUES(?,?,?,?)",
-                (snap_id, component, scope, blob),
-            )
-        c.commit()
+        with c:
+            snap_id = int(c.execute(
+                "INSERT INTO snapshots(run_id,applied_seq,ts_ms) VALUES(?,?,?)",
+                (run_id, applied_seq, ts_ms),
+            ).lastrowid or 0)
+            for (component, scope), blob in parts.items():
+                c.execute(
+                    "INSERT INTO snapshot_parts(snap_id,component,scope,state) VALUES(?,?,?,?)",
+                    (snap_id, component, scope, blob),
+                )
 
     # --- reads (recovery) ----------------------------------------------------
 
-    def latest_snapshot(self) -> tuple[int, dict[tuple[str, str], bytes]] | None:
-        """Latest snapshot by GLOBAL max(applied_seq) across runs → (applied_seq, parts)."""
+    def latest_snapshot(self) -> tuple[int, str, dict[tuple[str, str], bytes]] | None:
+        """Latest snapshot by GLOBAL max(applied_seq) across runs →
+        (applied_seq, owning run_id, parts). The run_id lets recovery validate the
+        fingerprint of the run that OWNS this snapshot (not merely the newest run)."""
         row = self._c.execute(
-            "SELECT id, applied_seq FROM snapshots ORDER BY applied_seq DESC, id DESC LIMIT 1"
+            "SELECT id, applied_seq, run_id FROM snapshots "
+            "ORDER BY applied_seq DESC, id DESC LIMIT 1"
         ).fetchone()
         if row is None:
             return None
-        snap_id, applied_seq = row
+        snap_id, applied_seq, run_id = row
         parts = {
             (comp, scope): blob
             for comp, scope, blob in self._c.execute(
                 "SELECT component, scope, state FROM snapshot_parts WHERE snap_id=?", (snap_id,)
             )
         }
-        return int(applied_seq), parts
+        return int(applied_seq), str(run_id), parts
 
     def replay_events(self, after_seq: int) -> list[tuple[int, str, str]]:
         """Events with seq > after_seq, in order → (seq, kind, payload-json)."""

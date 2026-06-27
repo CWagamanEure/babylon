@@ -44,6 +44,10 @@ class NetRiskManager:
         """Clear a latched halt (operator action)."""
         self._halted = False
 
+    def mark_halted(self) -> None:
+        """Re-arm the latch on recovery (replaying a journaled HALT event)."""
+        self._halted = True
+
     def to_state(self) -> dict[str, object]:
         hw = self._high_water
         return {"high_water": str(hw) if hw is not None else None, "halted": self._halted}

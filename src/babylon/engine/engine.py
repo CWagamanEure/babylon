@@ -99,12 +99,13 @@ class Engine:
         self._fills = 0
 
         self._coins = sorted({c for s in strategies for c in s.universe})
-        # Independent child RNG per strategy → adding/removing one doesn't shift
-        # another's prior draws (reproducibility).
-        children = rng.spawn(len(strategies))
+        # Independent child RNG per strategy, keyed to the SORTED strategy name so
+        # the prior draws are invariant to --coin/strategy ORDER (reproducibility).
+        ordered = sorted(strategies, key=lambda s: s.name)
+        children = dict(zip([s.name for s in ordered], rng.spawn(len(ordered)), strict=True))
         self._edges: dict[tuple[str, str], EdgeModel] = {
-            (s.name, c): s.make_edge_model(c, child)
-            for s, child in zip(strategies, children, strict=True)
+            (s.name, c): s.make_edge_model(c, children[s.name])
+            for s in strategies
             for c in s.universe
         }
         self._prev_mid: dict[str, float] = {}
@@ -112,6 +113,7 @@ class Engine:
         self._fail_count: dict[str, int] = {}
         self._quarantined: set[str] = set()
         self._last_applied_seq = 0  # journal offset of the last applied event
+        self._halted_prev = False  # net-risk halt edge-detect (journal on transition)
 
     def stop(self) -> None:
         self._stop.set()
@@ -137,6 +139,7 @@ class Engine:
             "netrisk": self._net_risk.to_state(),
             "quarantined": sorted(self._quarantined),
             "edge_dir": [[s, c, d] for (s, c), d in self._edge_dir.items()],
+            "prev_mid": dict(self._prev_mid),
         }
 
     def record_snapshot(self, journal: Any, now: int) -> None:
@@ -174,6 +177,7 @@ class Engine:
         self._net_risk.from_state(state["netrisk"])
         self._quarantined = set(state["quarantined"])
         self._edge_dir = {(s, c): int(d) for s, c, d in state["edge_dir"]}
+        self._prev_mid = dict(state.get("prev_mid", {}))
         for coin in self._coins:
             self._executor.set_position(coin, self._ledger.net_position(coin))
 
@@ -219,35 +223,56 @@ class Engine:
             await asyncio.gather(feed_task, return_exceptions=True)
 
     def _recover(self) -> None:
-        """Restore the latest snapshot + replay fills since, on boot. Paper: the
+        """Restore the latest snapshot + replay events since, on boot. Paper: the
         executor net is derived from the restored ledger."""
         snap = self._journal.latest_snapshot()
         if snap is None:
             return
-        applied_seq, parts = snap
+        applied_seq, snap_run_id, parts = snap
         blob = parts.get(("engine", ""))
         if blob is None:
             return
-        prior = self._journal.last_run()
-        if prior is not None and (
-            prior["seed"] != self._seed
-            or prior["roster"] != sorted(s.name for s in self._strategies)
+        # Validate the fingerprint of the run that OWNS this snapshot (not merely
+        # the newest run). On mismatch, ABORT the boot — never trade from flat
+        # while the journal holds real positions (that would shadow them).
+        owner = self._journal.run_meta(snap_run_id)
+        if owner is not None and (
+            owner["seed"] != self._seed
+            or owner["roster"] != sorted(s.name for s in self._strategies)
         ):
-            log.warning("engine.recover_skipped_fingerprint_mismatch")
-            return
+            raise RuntimeError(
+                "journal fingerprint mismatch (seed/roster) — refusing to start; "
+                "the journal holds positions from a different configuration"
+            )
         self.restore_state(json.loads(blob))
-        # Replay FILL events committed after the snapshot cut → advance the ledger.
+        # Replay events after the snapshot cut: FILLs advance the ledger; the
+        # latch transitions (QUARANTINE/HALT) re-arm — both lost otherwise.
         for seq, kind, payload in self._journal.replay_events(applied_seq):
-            if kind != "FILL":
-                continue
-            p = json.loads(payload)
-            price = Decimal(p["price"])
-            for strat, size in p["shares"].items():
-                self._ledger.apply_fill(strat, p["coin"], Decimal(size), price)
+            if kind == "FILL":
+                p = json.loads(payload)
+                price = Decimal(p["price"])
+                for strat, size in p["shares"].items():
+                    self._ledger.apply_fill(strat, p["coin"], Decimal(size), price)
+            elif kind == "QUARANTINE":
+                self._quarantined.add(json.loads(payload)["strategy"])
+            elif kind == "HALT":
+                self._net_risk.mark_halted()
+            elif kind == "RESET":
+                self._net_risk.reset()
+                self._quarantined.clear()
             self._last_applied_seq = seq
+        # Reconcile edge direction to the REPLAYED positions (a post-snapshot fill
+        # may have flipped a coin) so the next tick doesn't mis-charge a turnover.
+        for (strat, coin) in self._edge_dir:
+            pos = self._ledger.position(strat, coin)
+            self._edge_dir[(strat, coin)] = 1 if pos > 0 else -1 if pos < 0 else 0
         for coin in self._coins:
             self._executor.set_position(coin, self._ledger.net_position(coin))
-        log.info("engine.recovered", applied_seq=self._last_applied_seq)
+        log.info("engine.recovered", applied_seq=self._last_applied_seq,
+                 halted=self._net_risk_halted())
+
+    def _net_risk_halted(self) -> bool:
+        return bool(self._net_risk.to_state().get("halted"))
 
     def _ledger_equity(self, marks: dict[str, Decimal]) -> Decimal:
         return self._ledger.equity(marks)
@@ -305,9 +330,14 @@ class Engine:
                 log.exception("engine.strategy_error", strategy=strat.name)
                 for coin in strat.universe:
                     targets.setdefault((strat.name, coin), held[coin])
-                if self._fail_count[strat.name] >= QUARANTINE_AFTER:
+                if (self._fail_count[strat.name] >= QUARANTINE_AFTER
+                        and strat.name not in self._quarantined):
                     self._quarantined.add(strat.name)
                     log.error("engine.quarantine", strategy=strat.name)
+                    if self._journal is not None:  # durable latch (replayed on recovery)
+                        self._journal.record_event(
+                            "QUARANTINE", {"strategy": strat.name}, run_id=self._run_id,
+                            tick=self._tick_id, now=now, wall=now, strategy=strat.name)
 
         # Phase 4: ONE uniform Net-Risk scale, applied to every strategy's target,
         # so per-strategy virtual positions stay reconciled to the real net.
@@ -324,6 +354,11 @@ class Engine:
         review = self._net_risk.review(
             net_notional=net_notional, gross_notional=gross_notional, equity=equity
         )
+        if review.halted and not self._halted_prev and self._journal is not None:
+            self._journal.record_event(  # durable halt latch (replayed on recovery)
+                "HALT", {"drawdown": review.drawdown}, run_id=self._run_id,
+                tick=self._tick_id, now=now, wall=now)
+        self._halted_prev = review.halted
         scale = Decimal(str(review.scale))
         scaled = {k: sz * scale for k, sz in targets.items()}
 
@@ -357,10 +392,7 @@ class Engine:
                 continue
             self._apply_shares(fill, shares)
             self._fills += 1
-            if self._journal is not None:
-                self._last_applied_seq = self._journal.record_fill(
-                    order_id=order_id, cloid=fill.cloid, coin=fill.coin, price=fill.price,
-                    shares=shares, run_id=self._run_id, tick=self._tick_id, now=now, wall=now)
+            # Validate BEFORE persisting (don't journal a known-bad fill).
             if self._ledger.net_position(order.coin) != self._executor.net_position(order.coin):
                 log.error(
                     "engine.invariant_break", coin=order.coin,
@@ -368,6 +400,17 @@ class Engine:
                     executor=str(self._executor.net_position(order.coin)),
                 )
                 self._stop.set()
+                continue
+            if self._journal is not None:
+                self._last_applied_seq = self._journal.record_fill(
+                    order_id=order_id, cloid=fill.cloid, coin=fill.coin, price=fill.price,
+                    shares=shares, run_id=self._run_id, tick=self._tick_id, now=now, wall=now)
+                # Keep the positions cache LIVE (per fill, not just at snapshot).
+                self._journal.write_positions(
+                    applied_seq=self._last_applied_seq, ts_ms=now,
+                    rows=[(s, order.coin, *self._ledger.position_detail(s, order.coin))
+                          for s, _ in shares],
+                )
 
         # Measure the actual book we now hold (tracks; does not enforce).
         self._exposure = self._exposure_mon.assess(

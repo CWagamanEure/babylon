@@ -38,6 +38,13 @@ class Ledger:
             (p.size for (s, c), p in self._pos.items() if c == coin), Decimal(0)
         )
 
+    def position_detail(self, strategy: str, coin: str) -> tuple[Decimal, Decimal, Decimal]:
+        """(size, entry_px, realized) for one (strategy, coin) — zeros if absent."""
+        p = self._pos.get((strategy, coin))
+        if p is None:
+            return (Decimal(0), Decimal(0), Decimal(0))
+        return (p.size, p.entry_px, p.realized)
+
     def positions(self) -> list[tuple[str, str, Decimal, Decimal, Decimal]]:
         """Every (strategy, coin, size, entry_px, realized) the ledger knows about —
         including closed positions that still carry realized PnL."""

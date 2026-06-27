@@ -97,7 +97,7 @@ def test_state_survives_restart_via_journal(tmp_path):
     # --- "restart": fresh engine reads the snapshot back and restores
     got = j.latest_snapshot()
     assert got is not None
-    _seq, parts = got
+    _seq, _rid, parts = got
     state_b = json.loads(parts[("engine", "")])
 
     ex_b, led_b = PaperExecutor(), Ledger(Decimal(100_000))
@@ -115,6 +115,46 @@ def test_state_survives_restart_via_journal(tmp_path):
     # net-risk latch (high-water) restored
     assert b._net_risk.to_state() == a._net_risk.to_state()
     j.close()
+
+
+def test_recover_aborts_on_fingerprint_mismatch(tmp_path):
+    import pytest
+
+    j = Journal(tmp_path / "j.db")
+    j.connect()
+    j.begin_run("r1", started_ms=1, network="t", seed=3, roster=[STRAT])
+    a = _engine(np.random.default_rng(3), MarketView(), SimClock(),
+                PaperExecutor(), Ledger(Decimal(100_000)), journal=j, run_id="r1", seed=3)
+    a.record_snapshot(j, now=1)
+    j.close()
+    # A different seed must ABORT the boot, never silently trade from flat while
+    # the journal holds positions from another configuration.
+    j2 = Journal(tmp_path / "j.db")
+    b = _engine(np.random.default_rng(99), MarketView(), SimClock(),
+                PaperExecutor(), Ledger(Decimal(100_000)), journal=j2, run_id="r2", seed=99)
+    j2.connect()
+    with pytest.raises(RuntimeError, match="fingerprint"):
+        b._recover()
+    j2.close()
+
+
+def test_quarantine_latch_replayed_on_recovery(tmp_path):
+    j = Journal(tmp_path / "j.db")
+    j.connect()
+    j.begin_run("r1", started_ms=1, network="t", seed=3, roster=[STRAT])
+    a = _engine(np.random.default_rng(3), MarketView(), SimClock(),
+                PaperExecutor(), Ledger(Decimal(100_000)), journal=j, run_id="r1", seed=3)
+    a.record_snapshot(j, now=1)  # snapshot at seq 0
+    # A quarantine that latched AFTER the snapshot must survive recovery.
+    j.record_event("QUARANTINE", {"strategy": STRAT}, run_id="r1", tick=2, now=2, wall=2)
+    j.close()
+    j2 = Journal(tmp_path / "j.db")
+    b = _engine(np.random.default_rng(3), MarketView(), SimClock(),
+                PaperExecutor(), Ledger(Decimal(100_000)), journal=j2, run_id="r2", seed=3)
+    j2.connect()
+    b._recover()
+    assert STRAT in b._quarantined  # latch re-armed from the replayed event
+    j2.close()
 
 
 def test_engine_records_per_strategy_positions(tmp_path):
