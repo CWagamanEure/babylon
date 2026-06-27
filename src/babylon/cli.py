@@ -40,6 +40,7 @@ from babylon.journal.journal import Journal
 from babylon.logging import configure_logging, get_logger
 from babylon.portfolio.ledger import Ledger
 from babylon.portfolio.reconcile import Reconciler
+from babylon.risk.killswitch import KillSwitch
 from babylon.risk.manager import RiskManager
 from babylon.risk.net import NetRiskManager
 from babylon.sizing.sizer import Sizer
@@ -247,6 +248,7 @@ def paper(
         journal=jrnl,
         run_id=run_id,
         seed=seed,
+        kill_switch=KillSwitch(),
     )
     log.info("paper.start", coins=coin, equity=equity, network=s.network.value,
              run_id=run_id, journal=journal or None)

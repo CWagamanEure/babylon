@@ -26,6 +26,10 @@ class PerformanceMonitor:
         # peak can scroll out, silently reading a real 25% DD as 0%).
         self._peak: dict[str, float] = {}
         self._max_dd: dict[str, float] = {}
+        # Per-strategy net-of-cost UNIT returns (size-independent) — the EDGE series
+        # the 'is-it-real' gate / decay tracker read. Kept SEPARATE from the sized
+        # equity curves above, which are pro-cyclical and gate-contaminating.
+        self._unit: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=maxlen))
 
     def sample(self, equities: dict[str, float]) -> None:
         """Append one equity value per key (strategy names + ``ACCOUNT``)."""
@@ -53,3 +57,12 @@ class PerformanceMonitor:
 
     def equity_curve(self, key: str) -> list[float]:
         return list(self._series.get(key, ()))
+
+    def record_unit_returns(self, unit_returns: dict[str, float]) -> None:
+        """Append one net-of-cost unit return per strategy (the edge series)."""
+        for strat, r in unit_returns.items():
+            if math.isfinite(r):
+                self._unit[strat].append(r)
+
+    def unit_returns(self, strategy: str) -> np.ndarray:
+        return np.asarray(self._unit.get(strategy, ()), dtype=np.float64)

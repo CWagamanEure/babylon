@@ -39,10 +39,12 @@ from babylon.logging import get_logger
 from babylon.portfolio.ledger import Ledger
 from babylon.portfolio.reconcile import Reconciler
 from babylon.risk.exposure import BookExposure, ExposureMonitor
+from babylon.risk.killswitch import KillSwitch
 from babylon.risk.manager import RiskManager
 from babylon.risk.net import NetRiskManager
 from babylon.sizing.edge import EdgeModel
 from babylon.sizing.sizer import Sizer
+from babylon.stats.decay import EdgeTracker
 from babylon.stats.monitor import ACCOUNT, PerformanceMonitor
 from babylon.strategy.base import Strategy
 
@@ -75,6 +77,7 @@ class Engine:
         journal: Any = None,
         seed: int = 0,
         snapshot_every: int = 10,
+        kill_switch: KillSwitch | None = None,
     ) -> None:
         self._feed = feed
         self._run_id = run_id
@@ -108,6 +111,8 @@ class Engine:
         self._exposure: BookExposure | None = None
         self._perf = PerformanceMonitor()
         self._last_perf_sample: dict[str, float] = {}
+        self._kill = kill_switch
+        self._trackers: dict[str, EdgeTracker] = {s.name: EdgeTracker() for s in strategies}
         self._stop = asyncio.Event()
         self._fills = 0
 
@@ -241,8 +246,11 @@ class Engine:
                 await asyncio.sleep(self._interval)
                 try:
                     self._tick()
-                    if self._journal is not None and self._tick_id % self._snapshot_every == 0:
-                        self.record_snapshot(self._journal, self._clock.now())
+                    if self._tick_id % self._snapshot_every == 0:
+                        if self._kill is not None:
+                            self._evaluate_kills(self._clock.now())
+                        if self._journal is not None:
+                            self.record_snapshot(self._journal, self._clock.now())
                 except Exception:  # noqa: BLE001 — last-resort guard; per-strategy isolation is inside
                     log.exception("engine.tick_error")
         finally:
@@ -306,6 +314,40 @@ class Engine:
 
     def _net_risk_halted(self) -> bool:
         return bool(self._net_risk.to_state().get("halted"))
+
+    def _evaluate_kills(self, now: int) -> None:
+        """Consult the kill switch on the measurement layer (slow cadence): demote
+        (→ quarantine) breached/decayed strategies; halt the account on DD/CVaR."""
+        if self._kill is None:
+            return
+        strat_metrics = {}
+        decayed = {}
+        for strat in self._strategies:
+            m = self._perf.metrics(strat.name)
+            if m is not None:
+                strat_metrics[strat.name] = m
+            decayed[strat.name] = self._trackers[strat.name].decayed()
+        decision = self._kill.evaluate(
+            strat_metrics=strat_metrics,
+            account_metrics=self._perf.metrics(ACCOUNT),
+            edge_decayed=decayed,
+        )
+        for name in decision.demote:
+            if name not in self._quarantined:
+                self._quarantined.add(name)
+                log.warning("kill.demote", strategy=name, reason=decision.reasons.get(name))
+                if self._journal is not None:
+                    self._journal.record_event(
+                        "QUARANTINE", {"strategy": name, "reason": decision.reasons.get(name)},
+                        run_id=self._run_id, tick=self._tick_id, now=now, wall=now, strategy=name)
+        if decision.halt and not self._net_risk_halted():
+            self._net_risk.mark_halted()
+            log.warning("kill.halt", reason=decision.reasons.get(ACCOUNT))
+            if self._journal is not None:
+                self._journal.record_event(
+                    "HALT", {"reason": decision.reasons.get(ACCOUNT)}, run_id=self._run_id,
+                    tick=self._tick_id, now=now, wall=now)
+        self._halted_prev = self._net_risk_halted()
 
     def _ledger_equity(self, marks: dict[str, Decimal]) -> Decimal:
         return self._ledger.equity(marks)
@@ -474,6 +516,7 @@ class Engine:
         """Feed each EdgeModel last interval's net-of-fee unit return. Direction is
         the sign of the actual virtual position (auto-resets when flat); a turnover
         (direction change) is charged the round-trip taker fee."""
+        per_strat: dict[str, list[float]] = {}
         for coin, mark in marks.items():
             prev = self._prev_mid.get(coin)
             cur = float(mark)
@@ -492,8 +535,16 @@ class Engine:
                             sides = 2 if prev_dir != 0 else 1
                             unit -= sides * TAKER_FEE
                         self._edges[key].update(unit)
+                        per_strat.setdefault(strat.name, []).append(unit)
                     self._edge_dir[key] = direction
             self._prev_mid[coin] = cur
+        # Per-strategy unit return = mean across its held coins (size-independent),
+        # logged separately for the edge gate, and fed to the decay tracker.
+        if per_strat:
+            units = {s: sum(v) / len(v) for s, v in per_strat.items()}
+            self._perf.record_unit_returns(units)
+            for s, r in units.items():
+                self._trackers[s].update(r)
 
     def _compute_shares(
         self, fill: Fill, scaled: dict[tuple[str, str], Decimal]
