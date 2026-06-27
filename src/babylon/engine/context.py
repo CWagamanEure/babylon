@@ -28,6 +28,11 @@ class MarketView:
     def quote(self, coin: str) -> Quote | None:
         return self._quotes.get(coin)
 
+    def evict(self, coin: str) -> None:
+        """Drop a coin's quote (backtest staleness guard — a coin with no fresh
+        book must look ABSENT, not keep trading on a minutes-old price)."""
+        self._quotes.pop(coin, None)
+
     def mid(self, coin: str) -> Decimal | None:
         q = self._quotes.get(coin)
         return q.mid if q else None

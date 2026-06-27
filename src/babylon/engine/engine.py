@@ -33,7 +33,8 @@ from babylon.core import Fill
 from babylon.data.models import L2Book
 from babylon.engine.clock import Clock
 from babylon.engine.context import Context, MarketView
-from babylon.exchange.websocket import Subscription, WebSocketFeed
+from babylon.exchange.feed import Feed
+from babylon.exchange.websocket import Subscription
 from babylon.execution.base import Executor
 from babylon.logging import get_logger
 from babylon.portfolio.ledger import Ledger
@@ -59,7 +60,7 @@ class Engine:
     def __init__(
         self,
         *,
-        feed: WebSocketFeed,
+        feed: Feed,
         market: MarketView,
         strategies: Sequence[Strategy],
         sizer: Sizer,
@@ -224,10 +225,11 @@ class Engine:
         if book.best_bid is not None and book.best_ask is not None:
             self._market.update(book.coin, book.best_bid, book.best_ask)
 
-    async def run(self) -> None:
-        self._feed.on("l2Book", self._on_book)
-        for c in self._coins:
-            self._feed.subscribe(Subscription(type="l2Book", coin=c))
+    def start(self) -> None:
+        """Bootstrap sequence shared by run() and the backtest driver: journal
+        connect → recover → begin_run (ordering matters — recover validates the
+        fingerprint and rebuilds the ledger before on_start reflects it), then the
+        strategy on_start fan-out. Backtest passes journal=None → reduces to on_start."""
         if self._journal is not None:
             # Journal lives on this (the event-loop) thread; the brief FULL-fsync
             # per order/fill is acceptable at paper cadence. Off-loop single-writer
@@ -240,6 +242,12 @@ class Engine:
             )
         for s in self._strategies:
             s.on_start(self._context(s, {}, self._ledger_equity({})))
+
+    async def run(self) -> None:
+        self._feed.on("l2Book", self._on_book)
+        for c in self._coins:
+            self._feed.subscribe(Subscription(type="l2Book", coin=c))
+        self.start()
         feed_task = asyncio.create_task(self._feed.run())
         try:
             while not self._stop.is_set():
@@ -531,9 +539,11 @@ class Engine:
                     prev_dir = self._edge_dir.get(key, 0)
                     if direction != 0:
                         unit = direction * period_ret
-                        if direction != prev_dir:  # turnover this interval → fee drag
+                        if direction != prev_dir:  # turnover this interval → cost drag
                             sides = 2 if prev_dir != 0 else 1
-                            unit -= sides * TAKER_FEE
+                            # Fee AND the half-spread crossed per side — else the edge
+                            # series is mid-based/spread-blind and the prior optimistic.
+                            unit -= sides * (TAKER_FEE + self._half_spread_ret(coin))
                         self._edges[key].update(unit)
                         per_strat.setdefault(strat.name, []).append(unit)
                     self._edge_dir[key] = direction
@@ -545,6 +555,13 @@ class Engine:
             self._perf.record_unit_returns(units)
             for s, r in units.items():
                 self._trackers[s].update(r)
+
+    def _half_spread_ret(self, coin: str) -> float:
+        """Half-spread as a fraction of mid (the per-side cost of crossing)."""
+        q = self._market.quote(coin)
+        if q is None or q.mid <= 0:
+            return 0.0
+        return float((q.ask - q.bid) / 2 / q.mid)
 
     def _compute_shares(
         self, fill: Fill, scaled: dict[tuple[str, str], Decimal]

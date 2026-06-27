@@ -24,17 +24,22 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from babylon.backtest.config import BacktestConfig
+from babylon.backtest.runner import Backtester, BacktestResult
 from babylon.config import get_settings
 from babylon.data.archive import HyperliquidArchive, daterange
 from babylon.data.models import Trade, TradeSide
 from babylon.data.recorder import Recorder
+from babylon.data.replay import L2Replay
 from babylon.data.store import ParquetStore
-from babylon.engine.clock import RealClock
+from babylon.engine.clock import RealClock, SimClock
 from babylon.engine.context import MarketView
 from babylon.engine.engine import Engine
 from babylon.exchange.constants import endpoints_for
+from babylon.exchange.feed import NullFeed
 from babylon.exchange.rest import InfoClient
 from babylon.exchange.websocket import Subscription, WebSocketFeed
+from babylon.execution.backtest import BacktestExecutor
 from babylon.execution.paper import PaperExecutor
 from babylon.journal.journal import Journal
 from babylon.logging import configure_logging, get_logger
@@ -45,6 +50,7 @@ from babylon.risk.manager import RiskManager
 from babylon.risk.net import NetRiskManager
 from babylon.sizing.sizer import Sizer
 from babylon.strategy.examples.ma_crossover import MACrossover
+from babylon.strategy.examples.momentum import Momentum
 
 app = typer.Typer(help="Babylon — quantitative trading on Hyperliquid", no_args_is_help=True)
 console = Console()
@@ -199,6 +205,92 @@ def backfill(
         f"across {stats.files} coin-hours ({stats.empty_hours} empty, "
         f"{stats.bad_lines} bad lines) → {s.data_dir}"
     )
+
+
+@app.command()
+def backtest(
+    coin: list[str] = typer.Option(..., "--coin", "-c", help="Coin(s) to backtest"),
+    start: str = typer.Option(..., help="Start date YYYYMMDD (inclusive)"),
+    end: str = typer.Option("", help="End date YYYYMMDD (inclusive); defaults to start"),
+    equity: float = typer.Option(100_000.0, help="Starting equity (USDC)"),
+    lookback: int = typer.Option(30, help="Momentum lookback (bars)"),
+    interval_ms: int = typer.Option(2000, "--interval-ms", help="Eval cadence (sim ms)"),
+    slippage_bps: float = typer.Option(1.0, "--slippage-bps", help="Taker fill haircut"),
+    max_depth_fraction: float = typer.Option(
+        0.25, "--max-depth-fraction", help="Max share of visible depth one fill may take"
+    ),
+    warmup: int = typer.Option(50, help="Ticks dropped from the measured curve"),
+    seed: int = typer.Option(0, help="RNG seed (reproducible)"),
+) -> None:
+    """Replay archived L2 (from `backfill`/`record`) through the real engine.
+
+    HONEST SCOPE: L2-only — no funding, taker-only, zero-latency fills. A backtest
+    SEEDS A WEAK PRIOR / sanity-checks; it is NOT validation. No priors are exported.
+    """
+    _bootstrap()
+    s = get_settings()
+    end = end or start
+    strategies = [Momentum(c, lookback=lookback) for c in coin]
+    executor = BacktestExecutor(slippage_bps=slippage_bps, max_depth_fraction=max_depth_fraction)
+    clock = SimClock()
+    engine = Engine(
+        feed=NullFeed(), market=MarketView(), strategies=strategies, sizer=Sizer(),
+        risk=RiskManager(), net_risk=NetRiskManager(), reconciler=Reconciler(),
+        executor=executor, ledger=Ledger(Decimal(str(equity))), clock=clock,
+        budgets={st.name: 1.0 / len(strategies) for st in strategies},
+        rng=np.random.default_rng(seed), interval_s=0.0,
+    )
+    cfg = BacktestConfig(
+        start=start, end=end, interval_ms=interval_ms, seed=seed, warmup=warmup,
+        slippage_bps=slippage_bps, max_depth_fraction=max_depth_fraction,
+    )
+    replay = L2Replay(s.data_dir, coin, start, end)
+    log.info("backtest.start", coins=coin, start=start, end=end)
+    result = Backtester(engine, executor, replay, clock, cfg).run()
+    if result.n_events == 0:
+        console.print(
+            f"[red]No L2 data found[/red] for {coin} {start}..{end} under {s.data_dir}. "
+            "Run [bold]babylon backfill[/bold] or [bold]record[/bold] first."
+        )
+        raise typer.Exit(1)
+    _render_backtest(result)
+
+
+def _render_backtest(r: BacktestResult) -> None:
+    head = (
+        f"Backtest {','.join(r.coins)}  {r.start}..{r.end}  "
+        f"{r.n_events:,} events → {r.n_ticks:,} ticks "
+        f"(warmup {r.warmup}, {r.gaps} gaps, {r.skipped_books:,} bad books skipped)"
+    )
+    console.print(f"[bold]{head}[/bold]")
+
+    table = Table(title="Performance (post-warmup)")
+    table.add_column("strategy")
+    for col in ("log-growth", "max-DD", "Calmar", "CVaR5", "hit", "edge real?", "n"):
+        table.add_column(col, justify="right")
+    rows = [("ACCOUNT", r.account)] + sorted(r.per_strategy.items())
+    for name, m in rows:
+        if m is None:
+            continue
+        gate = r.gates.get(name)
+        real = "—" if gate is None else ("[green]yes[/green]" if gate.is_real else "no")
+        table.add_row(
+            name, f"{m.log_growth_total:+.4f}", f"{m.max_drawdown:.3f}", f"{m.calmar:+.2f}",
+            f"{m.cvar5:.4f}", f"{m.hit_rate:.2f}", real, str(m.n),
+        )
+    console.print(table)
+
+    console.print(
+        f"[dim]fills {r.fills:,} · no-fills {r.no_fills:,} "
+        f"({', '.join(f'{k}={v}' for k, v in r.no_fill_reasons.items()) or 'none'}) · "
+        f"depth used avg {r.avg_depth_fraction:.1%}/max {r.max_depth_fraction:.1%} · "
+        f"net-exposure {r.net_exposure_notional_hours:,.0f} notional·h · "
+        f"fill-model v{r.fill_model_version}[/dim]"
+    )
+    if r.max_depth_fraction > 0.5:
+        console.print("[yellow]⚠ some fills consumed >50% of visible depth — frozen-book "
+                      "VWAP is fiction at that size; treat sizing as unrealistic.[/yellow]")
+    console.print("[yellow]Honest scope:[/yellow] " + " ".join(f"• {h}" for h in r.honesty))
 
 
 @app.command()

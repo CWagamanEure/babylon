@@ -31,6 +31,14 @@ class PerformanceMonitor:
         # equity curves above, which are pro-cyclical and gate-contaminating.
         self._unit: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=maxlen))
 
+    def reset(self) -> None:
+        """Clear all series + peaks (backtest uses this at the warmup boundary so
+        warmup ticks don't pollute the measured equity curve / drawdown peak)."""
+        self._series.clear()
+        self._peak.clear()
+        self._max_dd.clear()
+        self._unit.clear()
+
     def sample(self, equities: dict[str, float]) -> None:
         """Append one equity value per key (strategy names + ``ACCOUNT``)."""
         for key, value in equities.items():
