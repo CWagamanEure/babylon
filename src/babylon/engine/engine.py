@@ -22,6 +22,7 @@ planned hardening.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any
@@ -69,8 +70,10 @@ class Engine:
         rng: np.random.Generator,
         interval_s: float = 2.0,
         exposure: ExposureMonitor | None = None,
+        run_id: str = "",
     ) -> None:
         self._feed = feed
+        self._run_id = run_id
         self._market = market
         self._strategies = strategies
         self._by_name = {s.name: s for s in strategies}
@@ -128,6 +131,28 @@ class Engine:
             "quarantined": sorted(self._quarantined),
             "edge_dir": [[s, c, d] for (s, c), d in self._edge_dir.items()],
         }
+
+    def record_snapshot(self, journal: Any, now: int) -> None:
+        """Register the strategies + persist the state snapshot + refresh the
+        per-strategy positions cache, all to the journal. Records which positions
+        currently belong to which strategy (history lives in the fills table)."""
+        for strat in self._strategies:
+            journal.register_strategy(
+                strat.name,
+                universe=strat.universe,
+                budget=Decimal(str(self._budgets.get(strat.name, 0.0))),
+                status="quarantined" if strat.name in self._quarantined else "paper",
+                now=now,
+            )
+        state = self.capture_state()
+        blob = json.dumps(state).encode()
+        journal.snapshot(
+            run_id=self._run_id, applied_seq=state["last_applied_seq"], ts_ms=now,
+            parts={("engine", ""): blob},
+        )
+        journal.write_positions(
+            applied_seq=state["last_applied_seq"], ts_ms=now, rows=self._ledger.positions()
+        )
 
     def restore_state(self, state: dict[str, Any]) -> None:
         """Rebuild in-memory state from a snapshot. For paper, the executor net is

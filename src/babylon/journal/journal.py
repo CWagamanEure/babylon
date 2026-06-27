@@ -38,7 +38,10 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS runs (
   run_id TEXT PRIMARY KEY, started_ms INTEGER NOT NULL, network TEXT,
   seed INTEGER, roster TEXT, code_hash TEXT);
-CREATE TABLE IF NOT EXISTS strategies (strategy TEXT PRIMARY KEY, first_seen_ms INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS strategies (
+  strategy TEXT PRIMARY KEY,
+  universe TEXT, budget TEXT, status TEXT NOT NULL DEFAULT 'paper',
+  first_seen_ms INTEGER NOT NULL, last_seen_ms INTEGER NOT NULL, manifest TEXT);
 CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id TEXT NOT NULL REFERENCES runs(run_id),
@@ -79,6 +82,15 @@ CREATE TABLE IF NOT EXISTS snapshot_parts (
   snap_id INTEGER NOT NULL REFERENCES snapshots(id),
   component TEXT NOT NULL, scope TEXT NOT NULL, state BLOB NOT NULL,
   PRIMARY KEY (snap_id, component, scope));
+-- Current per-strategy virtual positions (the netting model attributes each
+-- share to a strategy; the exchange holds only the net). Run-agnostic (positions
+-- carry across runs); refreshed from the ledger at snapshot time. Source of truth
+-- is `fills`; this is the queryable "what does each strat hold now" cache.
+CREATE TABLE IF NOT EXISTS positions (
+  strategy TEXT NOT NULL REFERENCES strategies(strategy), coin TEXT NOT NULL,
+  size_e8 INTEGER NOT NULL, entry_e8 INTEGER NOT NULL, realized_e8 INTEGER NOT NULL,
+  applied_seq INTEGER NOT NULL, updated_ms INTEGER NOT NULL,
+  PRIMARY KEY (strategy, coin));
 """
 
 
@@ -164,9 +176,47 @@ class Journal:
 
     def _ensure_strategy(self, name: str, now: int) -> None:
         self._c.execute(
-            "INSERT INTO strategies(strategy,first_seen_ms) VALUES(?,?) ON CONFLICT DO NOTHING",
-            (name, now),
+            "INSERT INTO strategies(strategy,first_seen_ms,last_seen_ms) VALUES(?,?,?) "
+            "ON CONFLICT(strategy) DO NOTHING",
+            (name, now, now),
         )
+
+    def register_strategy(
+        self, name: str, *, universe: list[str], budget: Decimal, status: str, now: int,
+        manifest: dict[str, Any] | None = None,
+    ) -> None:
+        """Upsert the strategy's identity/allocation/status; bumps last_seen."""
+        self._c.execute(
+            "INSERT INTO strategies"
+            "(strategy,universe,budget,status,first_seen_ms,last_seen_ms,manifest) "
+            "VALUES(?,?,?,?,?,?,?) "
+            "ON CONFLICT(strategy) DO UPDATE SET universe=excluded.universe, "
+            "budget=excluded.budget, status=excluded.status, "
+            "last_seen_ms=excluded.last_seen_ms, manifest=excluded.manifest",
+            (name, json.dumps(sorted(universe)), str(budget), status, now, now,
+             json.dumps(manifest or {})),
+        )
+        self._c.commit()
+
+    def write_positions(
+        self, *, applied_seq: int, ts_ms: int,
+        rows: list[tuple[str, str, Decimal, Decimal, Decimal]],
+    ) -> None:
+        """Refresh the per-strategy positions cache from the ledger (strategy, coin,
+        size, entry, realized). Upsert — closed positions keep their realized PnL."""
+        c = self._c
+        for strat, coin, size, entry, realized in rows:
+            self._ensure_strategy(strat, ts_ms)
+            c.execute(
+                "INSERT INTO positions"
+                "(strategy,coin,size_e8,entry_e8,realized_e8,applied_seq,updated_ms) "
+                "VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(strategy,coin) DO UPDATE SET size_e8=excluded.size_e8, "
+                "entry_e8=excluded.entry_e8, realized_e8=excluded.realized_e8, "
+                "applied_seq=excluded.applied_seq, updated_ms=excluded.updated_ms",
+                (strat, coin, to_e8(size), to_e8(entry), to_e8(realized), applied_seq, ts_ms),
+            )
+        c.commit()
 
     def record_order(
         self, order: Order, shares: dict[str, Decimal], *,
@@ -268,6 +318,71 @@ class Journal:
             for seq, kind, payload in self._c.execute(
                 "SELECT seq, kind, payload FROM events WHERE seq > ? ORDER BY seq", (after_seq,)
             )
+        ]
+
+    # --- per-strategy attribution queries (current + historical) -------------
+
+    def strategies(self) -> list[dict[str, Any]]:
+        rows = self._c.execute(
+            "SELECT strategy,universe,budget,status,first_seen_ms,last_seen_ms "
+            "FROM strategies ORDER BY strategy"
+        ).fetchall()
+        return [
+            {"strategy": s, "universe": json.loads(u or "[]"), "budget": b,
+             "status": st, "first_seen_ms": fs, "last_seen_ms": ls}
+            for s, u, b, st, fs, ls in rows
+        ]
+
+    def current_positions(self, strategy: str | None = None) -> list[dict[str, Any]]:
+        """Current per-strategy holdings (size, entry, realized PnL) — what each
+        strat holds right now. Filter by ``strategy`` for one strat."""
+        sql = ("SELECT strategy,coin,size_e8,entry_e8,realized_e8,applied_seq "
+               "FROM positions WHERE (size_e8 != 0 OR realized_e8 != 0)")
+        args: tuple[Any, ...] = ()
+        if strategy is not None:
+            sql += " AND strategy=?"
+            args = (strategy,)
+        sql += " ORDER BY strategy, coin"
+        return [
+            {"strategy": s, "coin": c, "size": from_e8(sz), "entry": from_e8(e),
+             "realized": from_e8(r), "applied_seq": seq}
+            for s, c, sz, e, r, seq in self._c.execute(sql, args)
+        ]
+
+    def fills_for(
+        self, strategy: str, *, coin: str | None = None, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """The historical trade record attributed to one strategy (newest first)."""
+        sql = ("SELECT f.ts_ms,f.coin,f.size_e8,f.price_e8,f.fee_e8,f.funding_e8,o.cloid "
+               "FROM fills f LEFT JOIN orders o ON f.order_id=o.order_id "
+               "WHERE f.strategy=?")
+        args: list[Any] = [strategy]
+        if coin is not None:
+            sql += " AND f.coin=?"
+            args.append(coin)
+        sql += " ORDER BY f.ts_ms DESC, f.id DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(limit)
+        return [
+            {"ts_ms": ts, "coin": c, "size": from_e8(sz), "price": from_e8(p),
+             "fee": from_e8(f), "funding": from_e8(fu), "cloid": cl}
+            for ts, c, sz, p, f, fu, cl in self._c.execute(sql, tuple(args))
+        ]
+
+    def strategy_summary(self) -> list[dict[str, Any]]:
+        """Per-strategy roll-up: status, #fills, current realized PnL, #open coins."""
+        rows = self._c.execute(
+            "SELECT s.strategy, s.status, s.budget, "
+            "  (SELECT COUNT(*) FROM fills f WHERE f.strategy=s.strategy), "
+            "  (SELECT COALESCE(SUM(realized_e8),0) FROM positions p WHERE p.strategy=s.strategy), "
+            "  (SELECT COUNT(*) FROM positions p WHERE p.strategy=s.strategy AND p.size_e8 != 0) "
+            "FROM strategies s ORDER BY s.strategy"
+        ).fetchall()
+        return [
+            {"strategy": s, "status": st, "budget": b, "n_fills": n,
+             "realized_pnl": from_e8(rp), "open_coins": oc}
+            for s, st, b, n, rp, oc in rows
         ]
 
     def run_meta(self, run_id: str) -> dict[str, Any] | None:

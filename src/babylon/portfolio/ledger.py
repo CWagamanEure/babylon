@@ -38,6 +38,15 @@ class Ledger:
             (p.size for (s, c), p in self._pos.items() if c == coin), Decimal(0)
         )
 
+    def positions(self) -> list[tuple[str, str, Decimal, Decimal, Decimal]]:
+        """Every (strategy, coin, size, entry_px, realized) the ledger knows about —
+        including closed positions that still carry realized PnL."""
+        return [
+            (s, c, p.size, p.entry_px, p.realized)
+            for (s, c), p in self._pos.items()
+            if p.size != 0 or p.realized != 0
+        ]
+
     def apply_fill(self, strategy: str, coin: str, size_delta: Decimal, price: Decimal) -> None:
         """Apply a signed fill to one strategy's virtual position (avg-cost)."""
         if size_delta == 0:

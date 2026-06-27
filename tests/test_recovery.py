@@ -80,6 +80,27 @@ def test_state_survives_restart_via_journal(tmp_path):
     j.close()
 
 
+def test_engine_records_per_strategy_positions(tmp_path):
+    a = _engine(np.random.default_rng(3), MarketView(), SimClock(),
+                PaperExecutor(), Ledger(Decimal(100_000)))
+    a._run_id = "r1"
+    _drive(a, a._market, a._clock, [100, 101, 102, 103, 104, 105, 106])
+
+    j = Journal(tmp_path / "j.db")
+    j.connect()
+    j.begin_run("r1", started_ms=1, network="testnet", seed=3, roster=[STRAT])
+    a.record_snapshot(j, now=9999)
+
+    # The strategy is registered with its allocation, and its current position is
+    # queryable and matches the ledger.
+    strats = {s["strategy"]: s for s in j.strategies()}
+    assert STRAT in strats and strats[STRAT]["budget"] == "1.0"
+    pos = j.current_positions(STRAT)
+    assert len(pos) == 1 and pos[0]["coin"] == COIN
+    assert pos[0]["size"] == a._ledger.net_position(COIN)
+    j.close()
+
+
 def test_restored_engine_continues_in_sync(tmp_path):
     a = _engine(np.random.default_rng(5), MarketView(), SimClock(),
                 PaperExecutor(), Ledger(Decimal(100_000)))
