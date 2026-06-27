@@ -289,10 +289,19 @@ class Engine:
                     self._edge_dir[key] = direction
             self._prev_mid[coin] = cur
 
-    def _attribute(self, fill: Fill, scaled: dict[tuple[str, str], Decimal]) -> None:
-        """Distribute a netted fill back to strategies pro-rata by their *scaled*
-        requested delta. The last contributor takes the exact residual so the
-        shares sum to fill.size precisely (keeps ledger net == executor net)."""
+    def _compute_shares(
+        self, fill: Fill, scaled: dict[tuple[str, str], Decimal]
+    ) -> list[tuple[str, Decimal]]:
+        """Pure: the per-strategy share vector for a fill — no mutation. This is the
+        single source of attribution, so the journal can persist the exact vector
+        and recovery reproduces identical booking.
+
+        Shares are pro-rata by each strategy's scaled requested delta; the last
+        (largest |delta|, name tiebreak — deterministic, NOT dict order) takes the
+        exact residual so the vector sums to fill.size precisely (keeps ledger net
+        == executor net). Pure pro-rata is correct for FULL fills (paper); partial
+        fills need the same-sign-fills-first rule — a [LIVE] TODO.
+        """
         coin = fill.coin
         deltas = [
             (s, scaled[(s, c)] - self._ledger.position(s, coin))
@@ -301,28 +310,28 @@ class Engine:
         ]
         total = sum((d for _s, d in deltas), Decimal(0))
         if total == 0:
-            return
-        # Deterministic order (NOT dict-iteration order) so the residual recipient
-        # is stable and reproducible on replay. Largest |delta| takes the residual
-        # (minimises its relative rounding impact); ties broken by strategy name.
-        # NB: pure pro-rata is correct for FULL fills (paper). Partial fills need
-        # the same-sign-as-net-fills-first rule — a live-executor TODO.
+            return []
         movers = sorted(
             ((s, d) for s, d in deltas if d != 0), key=lambda sd: (abs(sd[1]), sd[0])
         )
+        shares: list[tuple[str, Decimal]] = []
         allocated = Decimal(0)
         for i, (strat, d) in enumerate(movers):
-            if i == len(movers) - 1:
-                share = fill.size - allocated
-            else:
-                share = fill.size * d / total
+            share = fill.size - allocated if i == len(movers) - 1 else fill.size * d / total
+            if i != len(movers) - 1:
                 allocated += share
-            self._ledger.apply_fill(strat, coin, share, fill.price)
+            shares.append((strat, share))
+        return shares
+
+    def _attribute(self, fill: Fill, scaled: dict[tuple[str, str], Decimal]) -> None:
+        """Apply the computed share vector to the ledgers and notify strategies."""
+        for strat, share in self._compute_shares(fill, scaled):
+            self._ledger.apply_fill(strat, fill.coin, share, fill.price)
             s = self._by_name.get(strat)
             if s is not None:
                 s.on_fill(
                     Fill(
-                        coin=coin,
+                        coin=fill.coin,
                         size=share,
                         price=fill.price,
                         time=fill.time,

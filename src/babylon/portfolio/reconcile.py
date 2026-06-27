@@ -16,7 +16,7 @@ counter assignment is deterministic for a given tick (backtest reproducibility).
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 
 from babylon.core import Order, TimeInForce
 from babylon.logging import get_logger
@@ -25,8 +25,16 @@ log = get_logger("reconcile")
 
 
 class Reconciler:
-    def __init__(self, *, min_trade_notional: Decimal = Decimal(10)) -> None:
+    def __init__(
+        self,
+        *,
+        min_trade_notional: Decimal = Decimal(10),
+        lot: Decimal = Decimal("1e-8"),
+        run_id: str = "",
+    ) -> None:
         self._min_notional = min_trade_notional
+        self._lot = lot  # quantize order sizes → all booked state is exact at this step
+        self._run_id = run_id  # cloid prefix; makes cloids unique across runs/processes
         self._counter = 0
 
     def diff(
@@ -42,7 +50,10 @@ class Reconciler:
                 continue
             target = net_targets.get(coin, Decimal(0))
             cur = actual.get(coin, Decimal(0))
-            delta = target - cur
+            # Quantize the delta to the lot step so every booked size is exact at
+            # ≤8 dp (lossless for the journal's scaled-int money; required by real
+            # exchanges). cur is already lot-quantized from prior fills.
+            delta = (target - cur).quantize(self._lot, rounding=ROUND_HALF_EVEN)
             if delta == 0:
                 continue
             if abs(delta) * marks[coin] < self._min_notional:
@@ -51,6 +62,7 @@ class Reconciler:
                 (target > 0) == (cur > 0) and abs(target) < abs(cur)
             )
             self._counter += 1
+            prefix = f"{self._run_id}:" if self._run_id else ""
             orders.append(
                 Order(
                     coin=coin,
@@ -58,7 +70,7 @@ class Reconciler:
                     price=None,
                     reduce_only=reduce_only,
                     tif=TimeInForce.IOC,
-                    cloid=f"{coin}:{self._counter}",  # unique per order
+                    cloid=f"{prefix}{coin}:{self._counter}",  # unique per order, run-scoped
                 )
             )
         return orders

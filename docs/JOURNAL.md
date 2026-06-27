@@ -1,9 +1,23 @@
-# Babylon — Durable State Journal (design v2)
+# Babylon — Durable State Journal (design v3)
 
-The engine's crash-recovery + trade-record layer. Design only; not yet built.
-**v2** incorporates a four-lens audit (durability, schema/SQLite, engine
-integration, trading correctness). The architecture (WAL + event log + snapshots
-+ boot reconcile) held up; the details below changed materially.
+The engine's crash-recovery + trade-record layer. **v3** folds in a *second*
+four-lens audit of the v2 design, which caught regressions v2 introduced.
+
+**Build scope — paper path first.** The journal is being built for the **paper**
+engine, where it is fully correct and testable: full fills (no partials), no
+exchange (recovery is snapshot+replay only), no funding, no orphans. Items that
+only arise on the **live** path are marked **[LIVE]** below and are *required
+before the live executor*, not before paper.
+
+Engine prerequisites (the journal needs these; valuable on their own):
+- **Quantize order sizes** to a lot precision at the reconciler so all booked
+  state is exact at ≤8 dp → `*_e8` snapshotting is lossless. Without this,
+  rounding N per-strategy positions ≠ rounding the net once → the
+  `ledger-net == executor-net` invariant fails on the first post-recovery fill.
+- **Split `_attribute`** into `compute_shares(fill_size) → vector` + `apply(vector)`
+  so the engine has a share vector to journal (paper: intent == realized).
+- **Run-scope the cloid** (counter resets to 0 per process → cross-run collisions).
+- **Drop quote-less orders before** the pre-send commit (else PENDING orphans).
 
 ## Why
 
@@ -47,9 +61,11 @@ only the *observed* deque is durable; this also bounds snapshot size).
 A **single dedicated writer thread** owns the one connection — `ThreadPoolExecutor(max_workers=1)`,
 every journal call is `await loop.run_in_executor(self._writer, fn)`. NOT
 `asyncio.to_thread` (an arbitrary-thread pool can't safely share a stateful SQLite
-connection and breaks WAL's single-writer/transaction continuity). A **writer
-lease** (advisory lock file or a `runs` heartbeat) refuses to start a second
-writer (systemd-restart / dead-man's-switch races). `journal_size_limit` set;
+connection and breaks WAL's single-writer/transaction continuity). A **kernel file
+lock** (`flock`/`fcntl`, acquired at open *before* the recovery read) refuses a
+second writer — NOT a time-based heartbeat, which an `fsync`/GC stall can make
+declare a live writer dead → split-brain double-orders on real money.
+`journal_size_limit` set;
 analytics readers use a separate read-only connection and keep transactions short
 so checkpoints aren't starved; the pre-send commit **retries on `SQLITE_BUSY` and
 blocks the send on failure**.
@@ -168,37 +184,54 @@ is both durable and applied — the exact cut recovery needs.
 
 ## Snapshots
 
-Taken **on the event loop at a tick boundary** (no in-flight fill): cheaply copy
-ledger/edges/netrisk/quarantine into a plain struct + capture the current
-`last_applied_seq`, then **serialize + write off the loop** (writer thread), in one
-transaction that also rewrites `positions`. Tag the snapshot with that
-`last_applied_seq` — never with DB `max(seq)` (the off-loop write race would
-mis-tag and double-/under-apply non-idempotent fills/edge updates). Edges snapshot
-on a slower cadence than the ledger; the prior is not serialized.
+Taken **on the event loop at a tick boundary** (no in-flight fill): in one
+synchronous step (no `await` between) copy ledger/edges/netrisk/quarantine/`_edge_dir`
+into a plain struct AND capture `last_applied_seq`, then **serialize + write off the
+loop** (writer thread) in one transaction that also rewrites `positions`. Tag with
+that `last_applied_seq` — never DB `max(seq)`.
+
+**All components share one `applied_seq` cut (single-cut snapshot).** v2 wrote
+edges on a slower cadence with per-component parts, but a single replay cursor
+can't serve parts cut at different seqs (it silently drops EdgeModel updates in the
+gap, and pruning deletes the events the lagging part still needs). Every snapshot
+rewrites all parts at one cut. (Per-component cursors for a slow-edge cadence is a
+deferred optimization, not v1.) The prior draw array is NOT serialized — it's
+regenerated from the seed; only `_observed` + `prior_strength` are durable.
+Encode the edge arrays with `np.ndarray.tobytes()` (releases the GIL), msgpack for
+the small structs.
 
 ## Recovery (boot, async — before the run loop)
 
-1. Open DB, check `meta.schema_version`, migrate.
+1. Open DB (acquire the file lock first), check `meta.schema_version`, migrate.
 2. Load the latest snapshot by **global `MAX(applied_seq)` across all run_ids**
    (positions carry across runs; filtering by current run_id would make every
-   prior-run position look like an orphan). Rebuild ledger / edges (observed deque
-   over a freshly seeded model — prior regenerates identically) / high-water /
-   halt / quarantine.
-3. **Replay** events `WHERE seq > applied_seq` (ordered scan), applying each
-   exactly once; skip non-mutating kinds explicitly.
-4. **Reconcile with the exchange (live only):** fetch positions, open orders,
-   recent `userFills`, and **`userFunding`** (catch up funding accrued while down).
-   Resolve each `PENDING/SENT` order by cloid via `userFills` (incl. the *partial*
-   filled portion). Compare journal-net vs exchange-net per coin; an **orphan**
-   (exchange exposure no ledger explains) is **adopted into a synthetic "house"
-   ledger** and flattened reduce-only (counted by Net Risk meanwhile) — not left
-   live by a bare halt. Divergence triggers the **soft** kill (reduce-only), not a
-   hard one that strands real size.
-5. **Paper recovery** has no exchange backstop: restore the **executor net from the
-   snapshot** (else the reconciler re-trades the whole book at boot), mark stale
-   PENDING paper orders `FAILED`, and let the reconciler re-derive targets. Paper
-   correctness rests entirely on replay determinism — covered by a
-   "crash-after-submit replay == in-tick booking" test.
+   prior-run position look like an orphan). **Gate on a roster+seed fingerprint**:
+   priors are regenerated from `rng.spawn` by strategy construction order, so if
+   the strategy roster/order or `seed` differs from the snapshot's, restored
+   observations would sit on a differently-seeded prior — refuse/repair on
+   mismatch. Rebuild ledger / edges (observed deque over the re-seeded model) /
+   high-water / halt / quarantine / `_edge_dir`.
+3. **Replay** events `WHERE seq > applied_seq` (ordered scan). Applies must be a
+   strictly **seq-ordered single-consumer** sequence and `last_applied_seq`
+   advances only contiguously; skip non-mutating kinds explicitly.
+4. **[LIVE] Reconcile with the exchange:** fetch positions, open orders, recent
+   `userFills`, and **`userFunding`** (dedupe catch-up by `(coin, fundingTime)`).
+   Resolve each `PENDING/SENT` order by cloid via `userFills` (incl. *partial*).
+   `exch_fill_id`-dedupe so a journaled-then-also-returned fill isn't double-booked.
+   An **orphan** (exchange exposure no ledger explains) is adopted into a synthetic
+   **house** ledger — itself a first-class participant in `_attribute` and counted
+   in Net Risk's net/gross — and flattened reduce-only. The journal>exchange
+   direction writes the per-strategy shortfall into the house ledger and forces
+   ledger-net to exchange truth (reduce-only can't fix it alone).
+5. **Paper recovery** (no exchange backstop): after snapshot-load + replay,
+   **set the paper executor net := `ledger.net_position(coin)`** for every coin —
+   a single derivation from the replayed ledger (NOT a separately-snapshotted,
+   independently-rounded executor net, which would differ by a ULP and trip the
+   invariant; and replay carries fills past the snapshot cut that a snapshot-only
+   executor net would miss → double-booking). Mark stale PENDING paper orders
+   `FAILED`. Because all booked sizes are lot-quantized (engine prerequisite),
+   `ledger.net == executor.net` reproduces exactly. Correctness rests on replay
+   determinism — covered by a "crash-after-submit replay == in-tick booking" test.
 
 ## Engine integration
 

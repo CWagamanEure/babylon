@@ -27,6 +27,16 @@ def test_reconciler_reduce_only_and_unique_cloids():
     assert b[0].cloid != c[0].cloid != a[0].cloid
 
 
+def test_reconciler_quantizes_size_to_lot_and_run_scopes_cloid():
+    rec = Reconciler(min_trade_notional=Decimal(1), lot=Decimal("1e-8"), run_id="runX")
+    mk = {"BTC": Decimal(50000)}
+    # Full-precision Kelly target → order size quantized to 8 dp (e8-exact).
+    o = rec.diff(net_targets={"BTC": Decimal("1.234567891234")}, actual={}, marks=mk)
+    assert o[0].size == Decimal("1.23456789")  # rounded to 1e-8
+    assert -8 <= o[0].size.as_tuple().exponent  # no more than 8 fractional digits
+    assert o[0].cloid.startswith("runX:BTC:")  # run-scoped → cross-run unique
+
+
 def test_reconciler_open_is_not_reduce_only():
     rec = Reconciler(min_trade_notional=Decimal(1))
     orders = rec.diff(
