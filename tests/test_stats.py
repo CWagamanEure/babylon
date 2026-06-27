@@ -67,6 +67,40 @@ def test_variance_reliable_flag():
     assert m.hill_alpha > 0 and not m.variance_reliable  # α < 4 → Sharpe untrusted
 
 
+def test_nonfinite_equity_sanitized():
+    # A bad/inf/nan mark must NOT poison risk fields into NaN (NaN > limit is False
+    # → silently defeats a kill-switch).
+    m = compute_metrics(np.array([100.0, np.inf, 110.0, np.nan, 120.0]))
+    assert np.isfinite(m.max_drawdown) and np.isfinite(m.median) and m.n == 3
+
+
+def test_ruin_is_negative_infinity_not_zero():
+    from babylon.stats.metrics import log_growth_rate, log_growth_total
+
+    assert log_growth_rate(np.array([100.0, 110.0, 0.0])) == float("-inf")
+    assert log_growth_total(np.array([100.0, 50.0, 0.0])) == float("-inf")
+
+
+def test_beta_prob_unbiased_at_large_counts():
+    from babylon.stats.metrics import _prob_beta_gt_half
+
+    assert abs(_prob_beta_gt_half(25000, 25000) - 0.5) < 0.01  # symmetric → 0.5
+    assert abs(_prob_beta_gt_half(6, 6) - 0.5) < 0.01
+
+
+def test_variance_reliable_fails_closed_on_unknown_tail():
+    m = compute_metrics(np.array([100.0, 101.0, 102.0]))  # too little tail data → α=0
+    assert m.hill_alpha == 0.0 and not m.variance_reliable  # unknown ⇒ distrust Sharpe
+
+
+def test_monitor_drawdown_survives_window_eviction():
+    mon = PerformanceMonitor(maxlen=3)  # tiny window; the 200 peak scrolls out
+    for v in [100, 200, 150, 155, 160, 165]:
+        mon.sample({"x": float(v)})
+    # All-time max-DD (200→150 = 25%) must persist even though it left the window.
+    assert abs(mon.metrics("x").max_drawdown - 0.25) < 1e-9
+
+
 def test_monitor_tracks_per_key():
     mon = PerformanceMonitor()
     for e_a, e_acc in zip([100, 101, 102, 103], [100, 100.5, 101, 101.5], strict=True):

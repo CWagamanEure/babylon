@@ -7,7 +7,9 @@ lazily (the sample path is O(1); the metric fold is O(n) only when read).
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict, deque
+from dataclasses import replace
 
 import numpy as np
 
@@ -19,17 +21,32 @@ ACCOUNT = "__account__"  # reserved key for the whole-book equity curve
 class PerformanceMonitor:
     def __init__(self, maxlen: int = 50_000) -> None:
         self._series: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=maxlen))
+        # All-time running peak / max-drawdown, tracked incrementally OUTSIDE the
+        # window — a sliding deque must not define a path-dependent risk stat (the
+        # peak can scroll out, silently reading a real 25% DD as 0%).
+        self._peak: dict[str, float] = {}
+        self._max_dd: dict[str, float] = {}
 
     def sample(self, equities: dict[str, float]) -> None:
         """Append one equity value per key (strategy names + ``ACCOUNT``)."""
         for key, value in equities.items():
+            if not math.isfinite(value):
+                continue  # drop a bad/inf mark; never let it enter a risk stat
             self._series[key].append(value)
+            peak = max(self._peak.get(key, value), value)
+            self._peak[key] = peak
+            dd = (peak - value) / peak if peak > 0 else 0.0
+            self._max_dd[key] = max(self._max_dd.get(key, 0.0), min(max(dd, 0.0), 1.0))
 
     def metrics(self, key: str) -> Metrics | None:
         s = self._series.get(key)
         if s is None or len(s) < 2:
             return None
-        return compute_metrics(np.asarray(s, dtype=np.float64))
+        m = compute_metrics(np.asarray(s, dtype=np.float64))
+        # Override drawdown with the ALL-TIME values (the deque is windowed).
+        peak, last = self._peak[key], s[-1]
+        cur_dd = min(max((peak - last) / peak if peak > 0 else 0.0, 0.0), 1.0)
+        return replace(m, max_drawdown=self._max_dd[key], current_drawdown=cur_dd)
 
     def all_metrics(self) -> dict[str, Metrics]:
         return {k: m for k in self._series if (m := self.metrics(k)) is not None}

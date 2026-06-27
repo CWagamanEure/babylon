@@ -142,6 +142,26 @@ def test_multi_strategy_attribution_in_sync_and_deterministic():
     assert ledger.position(s1.name, "BTC") == led2.position(s1.name, "BTC")
 
 
+def test_budgets_must_sum_to_one():
+    import pytest
+
+    rng = np.random.default_rng(0)
+    strat = MACrossover("BTC", fast=2, slow=3)
+    from babylon.exchange.websocket import WebSocketFeed
+
+    def build(budget):
+        return Engine(
+            feed=WebSocketFeed(url="wss://x/ws"), market=MarketView(), strategies=[strat],
+            sizer=Sizer(), risk=RiskManager(), net_risk=NetRiskManager(),
+            reconciler=Reconciler(), executor=PaperExecutor(), ledger=Ledger(Decimal(1000)),
+            clock=SimClock(), budgets={strat.name: budget}, rng=rng, interval_s=0.0,
+        )
+
+    with pytest.raises(ValueError, match="sum to 1.0"):
+        build(0.6)
+    build(1.0)  # ok
+
+
 def test_no_leverage_respected_on_net():
     rng = np.random.default_rng(7)
     market, clock = MarketView(), SimClock()

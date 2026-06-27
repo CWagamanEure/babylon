@@ -93,10 +93,21 @@ class Engine:
         self._ledger = ledger
         self._clock = clock
         self._budgets = budgets
+        # Per-strategy equity curves only cross-foot to the account when budgets
+        # sum to 1 (Σ base = start). Enforce it — else per-strategy kill thresholds
+        # are computed against a wrong notional base. (Model a cash reserve as an
+        # explicit budget bucket if you want Σ<1.)
+        total_budget = sum(budgets.get(s.name, 0.0) for s in strategies)
+        if abs(total_budget - 1.0) > 1e-6:
+            raise ValueError(
+                f"strategy budgets must sum to 1.0 (got {total_budget}); "
+                "every strategy must be present in `budgets`"
+            )
         self._interval = interval_s
         self._exposure_mon = exposure or ExposureMonitor()
         self._exposure: BookExposure | None = None
         self._perf = PerformanceMonitor()
+        self._last_perf_sample: dict[str, float] = {}
         self._stop = asyncio.Event()
         self._fills = 0
 
@@ -438,8 +449,13 @@ class Engine:
         self._exposure = self._exposure_mon.assess(
             self._executor.net_positions(), marks, equity
         )
-        # Sample per-strategy + account equity curves for the measurement layer.
-        self._perf.sample(self._strategy_equities(marks, equity))
+        # Sample per-strategy + account equity for the measurement layer — but only
+        # when something actually changed (a stale tick with no new mark/fill would
+        # inject a spurious 0-return period, diluting log-growth).
+        eqs = self._strategy_equities(marks, equity)
+        if eqs != self._last_perf_sample:
+            self._perf.sample(eqs)
+            self._last_perf_sample = eqs
 
         log.info(
             "engine.tick",
