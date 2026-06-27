@@ -37,6 +37,7 @@ from babylon.execution.base import Executor
 from babylon.logging import get_logger
 from babylon.portfolio.ledger import Ledger
 from babylon.portfolio.reconcile import Reconciler
+from babylon.risk.exposure import BookExposure, ExposureMonitor
 from babylon.risk.manager import RiskManager
 from babylon.risk.net import NetRiskManager
 from babylon.sizing.edge import EdgeModel
@@ -67,6 +68,7 @@ class Engine:
         budgets: dict[str, float],
         rng: np.random.Generator,
         interval_s: float = 2.0,
+        exposure: ExposureMonitor | None = None,
     ) -> None:
         self._feed = feed
         self._market = market
@@ -81,6 +83,8 @@ class Engine:
         self._clock = clock
         self._budgets = budgets
         self._interval = interval_s
+        self._exposure_mon = exposure or ExposureMonitor()
+        self._exposure: BookExposure | None = None
         self._stop = asyncio.Event()
         self._fills = 0
 
@@ -104,6 +108,11 @@ class Engine:
     @property
     def fills(self) -> int:
         return self._fills
+
+    @property
+    def exposure(self) -> BookExposure | None:
+        """Latest book exposure snapshot (net directional, concentration, neutrality)."""
+        return self._exposure
 
     async def _on_book(self, data: dict[str, Any]) -> None:
         book = L2Book.from_ws(data)
@@ -237,6 +246,11 @@ class Engine:
                     )
                     self._stop.set()
 
+        # Measure the actual book we now hold (tracks; does not enforce).
+        self._exposure = self._exposure_mon.assess(
+            self._executor.net_positions(), marks, equity
+        )
+
         log.info(
             "engine.tick",
             equity=float(equity),
@@ -244,6 +258,10 @@ class Engine:
             dd=round(review.drawdown, 4),
             halted=review.halted,
             fills=self._fills,
+            leverage=round(self._exposure.net_leverage, 3),
+            bias=round(self._exposure.directional_bias, 3),
+            neutrality=round(self._exposure.neutrality, 3),
+            top=f"{self._exposure.top_coin}:{round(self._exposure.top_concentration, 3)}",
         )
 
     def _update_edges(self, marks: dict[str, Decimal]) -> None:
