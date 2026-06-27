@@ -11,35 +11,31 @@ def test_reconciler_deadband_skips_small():
         net_targets={"BTC": Decimal("0.001")},
         actual={"BTC": Decimal(0)},
         marks={"BTC": Decimal(50000)},  # 0.001*50000=50 < 100 deadband
-        now=1,
     )
     assert orders == []
 
 
-def test_reconciler_emits_delta_and_reduce_only():
+def test_reconciler_reduce_only_and_cloid_determinism():
     rec = Reconciler(min_trade_notional=Decimal(1))
-    # currently long 1, target 0 → reduce-only sell of 1.
-    orders = rec.diff(
-        net_targets={"BTC": Decimal(0)}, actual={"BTC": Decimal(1)},
-        marks={"BTC": Decimal(50000)}, now=1,
-    )
-    assert len(orders) == 1
-    assert orders[0].size == Decimal(-1)
-    assert orders[0].reduce_only is True
+    mk = {"BTC": Decimal(50000)}
+    a = rec.diff(net_targets={"BTC": Decimal(0)}, actual={"BTC": Decimal(1)}, marks=mk)
+    assert len(a) == 1 and a[0].size == Decimal(-1) and a[0].reduce_only is True
+    # Same (coin, target) on two reconciles → identical cloid (idempotent).
+    b = rec.diff(net_targets={"BTC": Decimal(0)}, actual={"BTC": Decimal(2)}, marks=mk)
+    assert a[0].cloid == b[0].cloid
 
 
 def test_reconciler_open_is_not_reduce_only():
     rec = Reconciler(min_trade_notional=Decimal(1))
     orders = rec.diff(
-        net_targets={"BTC": Decimal(1)}, actual={"BTC": Decimal(0)},
-        marks={"BTC": Decimal(50000)}, now=1,
+        net_targets={"BTC": Decimal(1)}, actual={"BTC": Decimal(0)}, marks={"BTC": Decimal(50000)}
     )
     assert orders[0].reduce_only is False
 
 
 def test_risk_per_asset_cap():
     rm = RiskManager(per_asset_cap=0.5)
-    # budget 1000, mark 100 → max size 5.
+
     def clamp(sz):
         return rm.clamp_target(Decimal(sz), mark=Decimal(100), budget_equity=Decimal(1000))
 
@@ -49,21 +45,26 @@ def test_risk_per_asset_cap():
 
 
 def test_net_risk_no_leverage_scaling():
-    nr = NetRiskManager(max_leverage=1.0, max_drawdown=0.5)
-    # gross notional = 2*1000=2000 > equity 1000 → scale by 0.5.
-    review = nr.review(
-        net_targets={"BTC": Decimal(2)}, marks={"BTC": Decimal(1000)}, equity=Decimal(1000)
-    )
-    assert review.scaled == 0.5
-    assert review.net_targets["BTC"] == Decimal(1)
-    assert not review.halted
+    nr = NetRiskManager(max_leverage=1.0, gross_cap=10.0, max_drawdown=0.5)
+    r = nr.review(net_notional=Decimal(2000), gross_notional=Decimal(2000), equity=Decimal(1000))
+    assert r.scale == 0.5 and not r.halted
 
 
-def test_net_risk_drawdown_halt_flattens():
+def test_net_risk_gross_cap_catches_offsetting_book():
+    # Net is flat-ish but gross is large (offsetting strategies) → gross cap bites.
+    nr = NetRiskManager(max_leverage=1.0, gross_cap=2.0, max_drawdown=0.9)
+    r = nr.review(net_notional=Decimal(100), gross_notional=Decimal(4000), equity=Decimal(1000))
+    assert r.scale == 0.5  # 2000 cap / 4000 gross
+
+
+def test_net_risk_drawdown_halt_latches():
     nr = NetRiskManager(max_leverage=1.0, max_drawdown=0.2)
-    nr.review(net_targets={}, marks={}, equity=Decimal(1000))  # high-water = 1000
-    review = nr.review(
-        net_targets={"BTC": Decimal(1)}, marks={"BTC": Decimal(100)}, equity=Decimal(700)
-    )  # 30% DD > 20%
-    assert review.halted
-    assert review.net_targets["BTC"] == Decimal(0)
+    nr.review(net_notional=Decimal(0), gross_notional=Decimal(0), equity=Decimal(1000))  # hw=1000
+    r = nr.review(net_notional=Decimal(0), gross_notional=Decimal(0), equity=Decimal(700))  # 30% DD
+    assert r.halted and r.scale == 0.0
+    # Latches: even after full recovery it stays halted until reset().
+    r2 = nr.review(net_notional=Decimal(0), gross_notional=Decimal(0), equity=Decimal(1000))
+    assert r2.halted
+    nr.reset()
+    r3 = nr.review(net_notional=Decimal(0), gross_notional=Decimal(0), equity=Decimal(1000))
+    assert not r3.halted

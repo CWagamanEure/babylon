@@ -25,7 +25,6 @@ class Reconciler:
         net_targets: dict[str, Decimal],
         actual: dict[str, Decimal],
         marks: dict[str, Decimal],
-        now: int,
     ) -> list[Order]:
         orders: list[Order] = []
         for coin in set(net_targets) | set(actual):
@@ -41,8 +40,10 @@ class Reconciler:
             reduce_only = (target == 0 and cur != 0) or (
                 (target > 0) == (cur > 0) and abs(target) < abs(cur)
             )
-            # Deterministic cloid keyed to (coin, target) → idempotent reconcile.
-            cloid = f"{coin}:{int(target * Decimal(10**8))}:{now}"
+            # Deterministic cloid keyed to (coin, quantized target) — NO wall-clock,
+            # so a retry/restart for the same target reuses the id and the exchange
+            # can dedupe it (idempotent reconciliation).
+            cloid = f"{coin}:{int(target * Decimal(10**8))}"
             orders.append(
                 Order(
                     coin=coin,

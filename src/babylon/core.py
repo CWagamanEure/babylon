@@ -2,9 +2,9 @@
 
 These are internal engine types (not exchange-JSON parsing — that's
 ``data.models``), so they're lightweight frozen dataclasses. The Decimal/float
-boundary (see ``docs/ARCHITECTURE.md``): execution-path quantities
-(`Order`/`Fill`/`TargetPosition` size & price) are **Decimal**; signal direction
-and anything feeding the stats/numpy domain is **float**.
+boundary (see ``docs/ARCHITECTURE.md``): execution-path quantities (`Order`/`Fill`
+size & price) are **Decimal**; signal direction and anything feeding the
+stats/numpy domain is **float**.
 """
 
 from __future__ import annotations
@@ -18,25 +18,6 @@ class TimeInForce(StrEnum):
     ALO = "Alo"  # add-liquidity-only (post-only / maker)
     GTC = "Gtc"
     IOC = "Ioc"
-
-
-@dataclass(frozen=True, slots=True)
-class Signal:
-    """A strategy's desired direction for a coin. Magnitude is decided by the
-    Sizer via the strategy's EdgeModel, not here. ``direction`` in [-1, 1];
-    sign sets long/short, 0 means flat."""
-
-    coin: str
-    direction: float
-
-
-@dataclass(frozen=True, slots=True)
-class TargetPosition:
-    """A signed target position in base (coin) units, in one strategy's
-    virtual ledger."""
-
-    coin: str
-    size: Decimal
 
 
 @dataclass(frozen=True, slots=True)

@@ -3,28 +3,29 @@ from decimal import Decimal
 import numpy as np
 
 from babylon.engine.clock import SimClock
-from babylon.engine.context import MarketView
+from babylon.engine.context import Context, MarketView
 from babylon.engine.engine import Engine
 from babylon.execution.paper import PaperExecutor
 from babylon.portfolio.ledger import Ledger
 from babylon.portfolio.reconcile import Reconciler
 from babylon.risk.manager import RiskManager
 from babylon.risk.net import NetRiskManager
+from babylon.sizing.edge import BootstrapEdgeModel
 from babylon.sizing.sizer import Sizer
+from babylon.strategy.base import Strategy
 from babylon.strategy.examples.ma_crossover import MACrossover
 
 
-def _engine(strat, market, clock, executor, ledger, rng):
-    # A WebSocketFeed is constructed but never run; the test drives _tick directly.
+def _engine(strat, market, clock, executor, ledger, rng, *, net_risk=None):
     from babylon.exchange.websocket import WebSocketFeed
 
     return Engine(
         feed=WebSocketFeed(url="wss://example/ws"),
         market=market,
         strategies=[strat],
-        sizer=Sizer(rng, fractional=0.25, n_draws=400),
+        sizer=Sizer(fractional=0.25),
         risk=RiskManager(per_asset_cap=0.5),
-        net_risk=NetRiskManager(max_leverage=1.0, max_drawdown=0.9),
+        net_risk=net_risk or NetRiskManager(max_leverage=1.0, gross_cap=10.0, max_drawdown=0.9),
         reconciler=Reconciler(min_trade_notional=Decimal(1)),
         executor=executor,
         ledger=ledger,
@@ -47,13 +48,12 @@ def test_pipeline_goes_long_in_uptrend_and_stays_in_sync():
     rng = np.random.default_rng(7)
     market, clock = MarketView(), SimClock()
     executor, ledger = PaperExecutor(), Ledger(Decimal(100_000))
-    strat = MACrossover("BTC", fast=2, slow=3, prior_mean=0.001, prior_std=0.005, prior_n=200)
+    strat = MACrossover(
+        "BTC", fast=2, slow=3, prior_mean=0.001, prior_std=0.005, prior_strength=200
+    )
     engine = _engine(strat, market, clock, executor, ledger, rng)
-
     _drive(engine, market, clock, "BTC", [100, 101, 102, 103, 104, 105, 106, 107])
-
-    assert ledger.net_position("BTC") > 0  # uptrend → long
-    # Invariant: ledger net == executor net (attribution distributes the full fill).
+    assert ledger.net_position("BTC") > 0
     assert ledger.net_position("BTC") == executor.net_position("BTC")
     assert engine.fills > 0
 
@@ -62,24 +62,63 @@ def test_pipeline_goes_short_in_downtrend():
     rng = np.random.default_rng(7)
     market, clock = MarketView(), SimClock()
     executor, ledger = PaperExecutor(), Ledger(Decimal(100_000))
-    strat = MACrossover("BTC", fast=2, slow=3, prior_mean=0.001, prior_std=0.005, prior_n=200)
+    strat = MACrossover(
+        "BTC", fast=2, slow=3, prior_mean=0.001, prior_std=0.005, prior_strength=200
+    )
     engine = _engine(strat, market, clock, executor, ledger, rng)
-
     _drive(engine, market, clock, "BTC", [110, 109, 108, 107, 106, 105, 104, 103])
-
     assert ledger.net_position("BTC") < 0
     assert ledger.net_position("BTC") == executor.net_position("BTC")
+
+
+class _HoldAfter(Strategy):
+    """Signals long for the first 3 ticks, then holds silently — the case that
+    used to break attribution when Net Risk acted on a held position."""
+
+    def __init__(self) -> None:
+        super().__init__("hold", ["BTC"])
+        self.n = 0
+
+    def make_edge_model(self, coin, rng):
+        return BootstrapEdgeModel.from_gaussian_prior(rng, mean=0.01, std=0.003, strength=300)
+
+    def on_bar(self, ctx: Context) -> None:
+        self.n += 1
+        if self.n <= 3:
+            ctx.signal("BTC", 1.0)
+
+
+def test_attribution_invariant_holds_under_deleverage_of_held_position():
+    # Regression for the CRITICAL bug: a held position (no fresh signal) that Net
+    # Risk deleverages must keep ledger net == executor net (and book the change).
+    rng = np.random.default_rng(0)
+    market, clock = MarketView(), SimClock()
+    executor, ledger = PaperExecutor(), Ledger(Decimal(100_000))
+    strat = _HoldAfter()
+    engine = _engine(
+        strat, market, clock, executor, ledger, rng,
+        net_risk=NetRiskManager(max_leverage=1.0, gross_cap=10.0, max_drawdown=0.9),
+    )
+    _drive(engine, market, clock, "BTC", [100, 100, 100])  # build position
+    assert ledger.net_position("BTC") == executor.net_position("BTC")
+    assert ledger.net_position("BTC") != 0
+    # Now force a hard deleverage while the strategy holds (silent).
+    engine._net_risk = NetRiskManager(max_leverage=0.1, gross_cap=10.0, max_drawdown=0.9)
+    clock.advance_to(9000)
+    market.update("BTC", Decimal("99.5"), Decimal("100.5"))
+    engine._tick()
+    assert ledger.net_position("BTC") == executor.net_position("BTC")  # INVARIANT
 
 
 def test_no_leverage_respected_on_net():
     rng = np.random.default_rng(7)
     market, clock = MarketView(), SimClock()
     executor, ledger = PaperExecutor(), Ledger(Decimal(100_000))
-    strat = MACrossover("BTC", fast=2, slow=3, prior_mean=0.005, prior_std=0.004, prior_n=300)
+    strat = MACrossover(
+        "BTC", fast=2, slow=3, prior_mean=0.005, prior_std=0.004, prior_strength=300
+    )
     engine = _engine(strat, market, clock, executor, ledger, rng)
-
     _drive(engine, market, clock, "BTC", [100, 101, 102, 103, 104, 105, 106, 107, 108, 109])
-
-    marks = {"BTC": ledger and Decimal("109")}
+    marks = {"BTC": Decimal("109")}
     notional = abs(ledger.net_position("BTC")) * marks["BTC"]
-    assert notional <= ledger.equity(marks) + Decimal(1)  # ≤ equity (no leverage)
+    assert notional <= ledger.equity(marks) + Decimal(1)

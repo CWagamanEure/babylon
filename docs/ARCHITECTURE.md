@@ -11,6 +11,16 @@ connectivity) is built; this document covers the engine layered on top.
 > backtest/live executors, the `stats/` measurement layer, funding & mark/oracle
 > data. Several v2 hardening items (off-loop stats, funding, mark price, durable
 > state) are deliberately stubbed in the skeleton and flagged in code with TODOs.
+>
+> **A second four-lens audit** (over the engine code) was applied and its
+> confirmed bugs fixed: the **attribution invariant** (net-risk deleverage/halt of
+> a held position no longer desyncs ledger from executor — fills carry an exact
+> residual), the **Kelly cliff** (a hard `max_fraction` cap + regime-anchored
+> stress, so leverage no longer scales as 1/worst-observed-loss), a **deterministic
+> cloid** (idempotent), a **latched** max-DD kill, a **gross-virtual cap**,
+> **net-of-fee** edge returns, edge direction from the actual position, per-strategy
+> tick isolation + quarantine, per-strategy RNG, deterministic sizing (no per-call
+> resampling), and `on_start`/`on_fill` hooks.
 
 > **v2** incorporates a four-lens architecture audit (quant-stats, execution/HL
 > perps, software, risk/adversarial). The headline correction: v1 reasoned in

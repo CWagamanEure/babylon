@@ -47,29 +47,33 @@ def kelly_fraction(
     fractional: float = 0.25,
     shrink: float = 1.0,
     stress_mult: float = 1.5,
+    max_fraction: float = 1.0,
 ) -> float:
     """Survival-safe Kelly fraction (unsigned magnitude, fraction of budget).
 
-    ``returns`` are unit returns to following the signal at unit size. The result
-    is ``fractional × shrink × f*`` where ``f*`` maximizes stress-floored
-    log-growth. Returns 0 when there's no positive log-growth edge.
+    ``returns`` are unit returns to following the signal at unit size. Two guards
+    keep it from over-betting an under-sampled tail (a prior audit found the old
+    floor let leverage scale as 1/worst-observed-loss):
+
+    - the stress loss is **regime-anchored** to ``max(worst, 3σ)`` rather than the
+      noisy minimum order statistic, so a placid sample can't imply a huge
+      ``f_max``. It's injected as a single point (negligible mean shift), so it
+      bounds the bet without destroying a genuine edge;
+    - a **hard ``max_fraction`` cap** is the real backstop — it's what actually
+      stops the blow-up, independent of the downstream per-asset / no-leverage
+      clamps.
     """
     r = np.asarray(returns, dtype=np.float64)
     if r.size == 0:
         return 0.0
 
-    # Stress floor: always assume a loss at least as bad as stress_mult × the
-    # worst seen; if the sample never lost, assume one anyway (≈2σ) — a loss-free
-    # history is the most dangerous case, not the safest.
-    losses = r[r < 0.0]
-    if losses.size:
-        stress = float(losses.min()) * stress_mult
-    else:
-        stress = -max(2.0 * float(r.std()), 1e-3)
-    r = np.append(r, stress)
+    worst = -min(float(r.min()), 0.0)  # magnitude of the worst observed loss
+    std = float(r.std())
+    stress_mag = max(worst, 3.0 * std, 1e-3) * stress_mult
+    r = np.append(r, -stress_mag)
 
     # Keep 1 + f·stress > 0 so log-growth stays finite.
-    f_max = 0.999 / abs(stress)
+    f_max = 0.999 / stress_mag
     f_star = optimal_log_growth_fraction(r, f_max)
-    f = fractional * shrink * f_star
+    f = min(fractional * shrink * f_star, max_fraction)
     return f if f > 1e-9 else 0.0  # floor sub-nano Kelly to a clean zero

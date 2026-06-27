@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
+from babylon.core import Fill
 from babylon.engine.context import Context
 from babylon.sizing.edge import BootstrapEdgeModel, EdgeModel
 
@@ -32,6 +33,9 @@ class Strategy(ABC):
     @abstractmethod
     def on_bar(self, ctx: Context) -> None:
         """Called each evaluation tick; emit directions via ``ctx.signal``."""
+
+    def on_fill(self, fill: Fill) -> None:  # noqa: B027 — optional hook
+        """Called when a fill is attributed to this strategy (its share)."""
 
     def on_stop(self, ctx: Context) -> None:  # noqa: B027 — optional hook
         pass

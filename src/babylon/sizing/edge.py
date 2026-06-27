@@ -1,11 +1,15 @@
 """EdgeModel — a per-strategy estimated return distribution, decoupled from
 signal logic.
 
-Hands the Sizer a **sampler** (bootstrap draws of unit returns), not `(μ, σ)`,
-so the tail-aware Kelly kernel has the full distribution. A weak prior gives the
-cold-start ≈ 0 sizing; observed live returns accumulate and take over. (v1 uses
-an IID bootstrap of the pooled prior+observed returns; a block bootstrap that
-preserves serial dependence is the planned upgrade.)
+Hands the Sizer the **full empirical distribution** of unit returns (prior +
+observed) so the tail-aware Kelly kernel sees the whole shape, plus a `shrink`
+confidence.
+
+Confidence is driven by a **pseudo-count** that is deliberately separate from the
+number of bootstrap draws (a prior audit found that letting the prior's *draw
+count* set confidence let callers fabricate day-one certainty). A weak prior sets
+`prior_strength=0` → cold-start sizing ≈ 0; an informative backtest prior sets a
+deliberate, bounded `prior_strength`.
 """
 
 from __future__ import annotations
@@ -20,24 +24,16 @@ from numpy.typing import NDArray
 
 @dataclass(frozen=True, slots=True)
 class EdgeEstimate:
-    """A resamplable return distribution + how much real data backs it.
-
-    ``n_effective`` counts *real* observations (informative prior + live), so an
-    informative backtest prior yields sizeable confidence from day one while a
-    weak prior or cold start stays near zero.
-    """
+    """The empirical return distribution + how much real confidence backs it."""
 
     draws: NDArray[np.float64]  # pooled prior + observed unit returns
-    n_effective: int
-
-    def sample(self, rng: np.random.Generator, k: int) -> NDArray[np.float64]:
-        return rng.choice(self.draws, size=k, replace=True)
+    n_effective: int  # confidence pseudo-count (prior_strength + observed count)
 
     def shrink(self) -> float:
         """SNR-based shrinkage in [0, 1): how much to trust the edge for sizing.
 
-        SNR = n · mean² / var (signal-to-noise of the mean estimate); shrink =
-        SNR/(1+SNR) → 0 at cold start, → 1 as the posterior concentrates.
+        SNR = n · mean² / var; shrink = SNR/(1+SNR) → 0 at cold start, → 1 as the
+        posterior concentrates.
         """
         if self.n_effective == 0:
             return 0.0
@@ -55,22 +51,37 @@ class EdgeModel(Protocol):
 
 
 class BootstrapEdgeModel:
-    """Weak-prior bootstrap edge. ``prior_returns`` seed the distribution (e.g.
-    from a backtest, deliberately weak); live unit returns are appended."""
+    """Empirical edge from pooled prior + observed unit returns.
+
+    ``prior_returns`` shape the distribution; ``prior_strength`` (default 0) is the
+    confidence pseudo-count the prior contributes — set it > 0 only for a prior
+    you deliberately trust (e.g. a validated backtest)."""
 
     def __init__(
-        self, prior_returns: list[float] | None = None, *, max_observed: int = 5000
+        self,
+        prior_returns: list[float] | None = None,
+        *,
+        prior_strength: int = 0,
+        max_observed: int = 5000,
     ) -> None:
         self._prior = np.asarray(prior_returns or [], dtype=np.float64)
+        self._prior_strength = prior_strength
         self._observed: deque[float] = deque(maxlen=max_observed)
 
     @classmethod
     def from_gaussian_prior(
-        cls, rng: np.random.Generator, *, mean: float, std: float, n: int
+        cls,
+        rng: np.random.Generator,
+        *,
+        mean: float,
+        std: float,
+        draws: int = 200,
+        strength: int = 20,
     ) -> BootstrapEdgeModel:
-        """Seed a (deliberately weak when n is small) prior from backtest-like
-        summary stats. ``n`` controls how informative — i.e. confidence."""
-        return cls(list(rng.normal(mean, std, size=n)))
+        """Seed a prior from backtest-like summary stats. ``draws`` sets the
+        distribution resolution; ``strength`` is the (deliberate, bounded) day-one
+        confidence pseudo-count — NOT tied to ``draws``."""
+        return cls(list(rng.normal(mean, std, size=draws)), prior_strength=strength)
 
     def update(self, unit_return: float) -> None:
         self._observed.append(float(unit_return))
@@ -78,7 +89,7 @@ class BootstrapEdgeModel:
     def estimate(self) -> EdgeEstimate:
         obs = np.asarray(self._observed, dtype=np.float64)
         draws = np.concatenate([self._prior, obs]) if self._prior.size else obs
-        n_effective = self._prior.size + len(self._observed)
+        n_effective = self._prior_strength + len(self._observed)
         if draws.size == 0:
             draws = np.zeros(1, dtype=np.float64)
         return EdgeEstimate(draws=draws, n_effective=n_effective)

@@ -26,18 +26,21 @@ class MACrossover(Strategy):
         slow: int = 30,
         prior_mean: float = 0.0005,
         prior_std: float = 0.01,
-        prior_n: int = 40,
+        prior_strength: int = 20,
     ) -> None:
         super().__init__(name=f"ma_{coin}_{fast}_{slow}", universe=[coin])
         self._coin = coin
         self._fast = fast
         self._slow = slow
         self._hist: deque[float] = deque(maxlen=slow)
-        self._prior = (prior_mean, prior_std, prior_n)
+        # prior_strength is the deliberate day-one confidence (pseudo-count).
+        self._prior = (prior_mean, prior_std, prior_strength)
 
     def make_edge_model(self, coin: str, rng: np.random.Generator) -> EdgeModel:
-        mean, std, n = self._prior
-        return BootstrapEdgeModel.from_gaussian_prior(rng, mean=mean, std=std, n=n)
+        mean, std, strength = self._prior
+        return BootstrapEdgeModel.from_gaussian_prior(
+            rng, mean=mean, std=std, strength=strength
+        )
 
     def on_bar(self, ctx: Context) -> None:
         mid = ctx.mid(self._coin)

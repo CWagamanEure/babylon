@@ -29,7 +29,8 @@ class Ledger:
         self._pos: dict[tuple[str, str], Position] = defaultdict(Position)
 
     def position(self, strategy: str, coin: str) -> Decimal:
-        return self._pos[(strategy, coin)].size
+        pos = self._pos.get((strategy, coin))  # read without creating an entry
+        return pos.size if pos else Decimal(0)
 
     def net_position(self, coin: str) -> Decimal:
         return sum(

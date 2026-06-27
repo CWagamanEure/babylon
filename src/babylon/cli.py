@@ -213,6 +213,9 @@ def paper(
     risk → reconcile → paper fills → ledger) on real prices.
     """
     _bootstrap()
+    if fast >= slow:
+        console.print("[red]--fast must be less than --slow[/red]")
+        raise typer.Exit(1)
     s = get_settings()
     ep = endpoints_for(s.network)
     rng = np.random.default_rng(seed)
@@ -223,7 +226,7 @@ def paper(
         feed=feed,
         market=MarketView(),
         strategies=strategies,
-        sizer=Sizer(rng),
+        sizer=Sizer(),
         risk=RiskManager(),
         net_risk=NetRiskManager(),
         reconciler=Reconciler(),

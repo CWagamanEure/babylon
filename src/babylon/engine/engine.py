@@ -1,17 +1,22 @@
 """The orchestrating engine.
 
-Drives the within-tick phase order from ``docs/ARCHITECTURE.md`` on a timer
-cadence over the live feed:
+Within-tick phase order (see ``docs/ARCHITECTURE.md``), on a timer cadence over
+the live feed:
 
-  1. (market data is applied to MarketView by the feed handler, between ticks)
-  2. update each EdgeModel with the realized **unit return** of last tick's signal
-  3. strategies emit directions → Sizer → per-strategy Risk → targets
-  4. net targets per coin → Net Risk Manager
-  5. Reconciler diffs vs actual → orders
-  6. Executor fills → attribute pro-rata back to strategy ledgers
+  1. (market data applied to MarketView by the feed handler, between ticks)
+  2. update each EdgeModel with last interval's realized **net-of-fee unit return**
+     (direction taken from the actual virtual position, so a quiet strategy can't
+     keep accruing a stale signal's returns)
+  3. strategies emit directions → Sizer → per-strategy Risk → raw targets
+     (each strategy isolated; a thrower is quarantined, never poisons the tick)
+  4. Net Risk Manager returns ONE uniform scale; apply it to every target so the
+     virtual ledgers stay reconciled to the real net
+  5. Reconciler diffs scaled net vs actual → orders
+  6. Executor fills → attribute (exact residual) back to ledgers → on_fill, then
+     assert ledger net == executor net
 
-Heavy stats run inline here at the (slow) tick cadence; moving them fully
-off-loop is the planned hardening.
+Heavy stats run inline at the (slow) tick cadence; moving them off-loop is the
+planned hardening.
 """
 
 from __future__ import annotations
@@ -40,6 +45,10 @@ from babylon.strategy.base import Strategy
 
 log = get_logger("engine")
 
+# Approx Hyperliquid taker fee per side; round-trip charged to the edge on turnover.
+TAKER_FEE = 0.00045
+QUARANTINE_AFTER = 3  # consecutive strategy failures before it's benched
+
 
 class Engine:
     def __init__(
@@ -62,6 +71,7 @@ class Engine:
         self._feed = feed
         self._market = market
         self._strategies = strategies
+        self._by_name = {s.name: s for s in strategies}
         self._sizer = sizer
         self._risk = risk
         self._net_risk = net_risk
@@ -75,15 +85,18 @@ class Engine:
         self._fills = 0
 
         self._coins = sorted({c for s in strategies for c in s.universe})
+        # Independent child RNG per strategy → adding/removing one doesn't shift
+        # another's prior draws (reproducibility).
+        children = rng.spawn(len(strategies))
         self._edges: dict[tuple[str, str], EdgeModel] = {
-            (s.name, c): s.make_edge_model(c, rng) for s in strategies for c in s.universe
+            (s.name, c): s.make_edge_model(c, child)
+            for s, child in zip(strategies, children, strict=True)
+            for c in s.universe
         }
-        self._last_dir: dict[tuple[str, str], float] = {}
         self._prev_mid: dict[str, float] = {}
-
-        feed.on("l2Book", self._on_book)
-        for c in self._coins:
-            feed.subscribe(Subscription(type="l2Book", coin=c))
+        self._edge_dir: dict[tuple[str, str], int] = {}  # last edge direction, for fee-on-turnover
+        self._fail_count: dict[str, int] = {}
+        self._quarantined: set[str] = set()
 
     def stop(self) -> None:
         self._stop.set()
@@ -98,79 +111,131 @@ class Engine:
             self._market.update(book.coin, book.best_bid, book.best_ask)
 
     async def run(self) -> None:
+        self._feed.on("l2Book", self._on_book)
+        for c in self._coins:
+            self._feed.subscribe(Subscription(type="l2Book", coin=c))
+        for s in self._strategies:
+            s.on_start(self._context(s, {}, self._ledger_equity({})))
         feed_task = asyncio.create_task(self._feed.run())
         try:
             while not self._stop.is_set():
                 await asyncio.sleep(self._interval)
                 try:
                     self._tick()
-                except Exception:  # noqa: BLE001 — one bad tick must not kill the loop
+                except Exception:  # noqa: BLE001 — last-resort guard; per-strategy isolation is inside
                     log.exception("engine.tick_error")
         finally:
             self._stop.set()
             self._feed.stop()
+            for s in self._strategies:
+                s.on_stop(self._context(s, {}, self._ledger_equity({})))
             await asyncio.gather(feed_task, return_exceptions=True)
+
+    def _ledger_equity(self, marks: dict[str, Decimal]) -> Decimal:
+        return self._ledger.equity(marks)
+
+    def _context(self, strat: Strategy, marks: dict[str, Decimal], equity: Decimal) -> Context:
+        positions = {c: self._ledger.position(strat.name, c) for c in strat.universe}
+        return Context(
+            strategy=strat.name,
+            clock=self._clock,
+            market=self._market,
+            positions=positions,
+            equity=equity,
+        )
 
     def _tick(self) -> None:
         now = self._clock.now()
         marks = self._market.marks(self._coins)
         if not marks:
-            return  # no prices yet
+            return
 
         self._update_edges(marks)
         equity = self._ledger.equity(marks)
 
-        # Phase 3: strategies → signals → sizing → per-strategy risk → targets.
+        # Phase 3: per-strategy directions → sizing → per-asset risk → raw targets.
+        # Each strategy is isolated; a thrower holds its position and is benched.
         targets: dict[tuple[str, str], Decimal] = {}
         for strat in self._strategies:
-            budget_equity = equity * Decimal(str(self._budgets.get(strat.name, 0.0)))
-            positions = {c: self._ledger.position(strat.name, c) for c in strat.universe}
-            ctx = Context(
-                strategy=strat.name,
-                clock=self._clock,
-                market=self._market,
-                positions=positions,
-                equity=equity,
-            )
-            strat.on_bar(ctx)
-            signals = ctx.collected()
-            for coin in strat.universe:
-                # default: hold current virtual position if no fresh signal.
-                if coin not in signals or coin not in marks:
-                    targets[(strat.name, coin)] = positions[coin]
-                    continue
-                direction = signals[coin]
-                self._last_dir[(strat.name, coin)] = direction
-                edge = self._edges[(strat.name, coin)].estimate()
-                raw = self._sizer.target_size(
-                    edge=edge,
-                    direction=direction,
-                    budget_equity=budget_equity,
-                    mark_price=marks[coin],
-                )
-                targets[(strat.name, coin)] = self._risk.clamp_target(
-                    raw, mark=marks[coin], budget_equity=budget_equity
-                )
+            held = {c: self._ledger.position(strat.name, c) for c in strat.universe}
+            if strat.name in self._quarantined:
+                targets.update({(strat.name, c): held[c] for c in strat.universe})
+                continue
+            try:
+                budget_equity = equity * Decimal(str(self._budgets.get(strat.name, 0.0)))
+                ctx = self._context(strat, marks, equity)
+                strat.on_bar(ctx)
+                signals = ctx.collected()
+                for coin in strat.universe:
+                    if coin not in signals or coin not in marks:
+                        targets[(strat.name, coin)] = held[coin]
+                        continue
+                    edge = self._edges[(strat.name, coin)].estimate()
+                    raw = self._sizer.target_size(
+                        edge=edge,
+                        direction=signals[coin],
+                        budget_equity=budget_equity,
+                        mark_price=marks[coin],
+                    )
+                    targets[(strat.name, coin)] = self._risk.clamp_target(
+                        raw, mark=marks[coin], budget_equity=budget_equity
+                    )
+                self._fail_count[strat.name] = 0
+            except Exception:  # noqa: BLE001 — isolate one bad strategy from the rest
+                self._fail_count[strat.name] = self._fail_count.get(strat.name, 0) + 1
+                log.exception("engine.strategy_error", strategy=strat.name)
+                for coin in strat.universe:
+                    targets.setdefault((strat.name, coin), held[coin])
+                if self._fail_count[strat.name] >= QUARANTINE_AFTER:
+                    self._quarantined.add(strat.name)
+                    log.error("engine.quarantine", strategy=strat.name)
 
-        # Phase 4: net per coin → Net Risk Manager.
+        # Phase 4: ONE uniform Net-Risk scale, applied to every strategy's target,
+        # so per-strategy virtual positions stay reconciled to the real net.
+        net_notional = Decimal(0)
+        for coin in self._coins:
+            if coin not in marks:
+                continue
+            net = sum((sz for (_s, c), sz in targets.items() if c == coin), Decimal(0))
+            net_notional += abs(net) * marks[coin]
+        gross_notional = sum(
+            (abs(sz) * marks[c] for (_s, c), sz in targets.items() if c in marks),
+            Decimal(0),
+        )
+        review = self._net_risk.review(
+            net_notional=net_notional, gross_notional=gross_notional, equity=equity
+        )
+        scale = Decimal(str(review.scale))
+        scaled = {k: sz * scale for k, sz in targets.items()}
+
+        # Phase 5+6: reconcile scaled net vs actual → orders → fills → attribute.
         net_targets: dict[str, Decimal] = {}
-        for (_s, coin), size in targets.items():
-            net_targets[coin] = net_targets.get(coin, Decimal(0)) + size
-        review = self._net_risk.review(net_targets=net_targets, marks=marks, equity=equity)
-
-        # Phase 5+6: reconcile vs actual → orders → fills → attribute.
+        for (_s, coin), sz in scaled.items():
+            net_targets[coin] = net_targets.get(coin, Decimal(0)) + sz
         actual = {c: self._executor.net_position(c) for c in self._coins}
         orders = self._reconciler.diff(
-            net_targets=review.net_targets, actual=actual, marks=marks, now=now
+            net_targets=net_targets, actual=actual, marks=marks
         )
         for order in orders:
             quote = self._market.quote(order.coin)
             if quote is None:
                 continue
-            fill = self._executor.submit(order, quote, now)
+            try:
+                fill = self._executor.submit(order, quote, now)
+            except Exception:  # noqa: BLE001 — an executor failure must not desync state
+                log.exception("engine.submit_error", coin=order.coin)
+                continue
             if fill is not None:
-                self._attribute(fill, targets)
+                self._attribute(fill, scaled)
                 self._fills += 1
+                if self._ledger.net_position(order.coin) != self._executor.net_position(order.coin):
+                    log.error(
+                        "engine.invariant_break",
+                        coin=order.coin,
+                        ledger=str(self._ledger.net_position(order.coin)),
+                        executor=str(self._executor.net_position(order.coin)),
+                    )
+                    self._stop.set()
 
         log.info(
             "engine.tick",
@@ -182,9 +247,9 @@ class Engine:
         )
 
     def _update_edges(self, marks: dict[str, Decimal]) -> None:
-        """Feed each strategy's EdgeModel the realized unit return of its last
-        direction over the interval — size-independent, so sizing can't
-        contaminate the edge estimate."""
+        """Feed each EdgeModel last interval's net-of-fee unit return. Direction is
+        the sign of the actual virtual position (auto-resets when flat); a turnover
+        (direction change) is charged the round-trip taker fee."""
         for coin, mark in marks.items():
             prev = self._prev_mid.get(coin)
             cur = float(mark)
@@ -193,26 +258,50 @@ class Engine:
                 for strat in self._strategies:
                     if coin not in strat.universe:
                         continue
-                    direction = self._last_dir.get((strat.name, coin), 0.0)
-                    if direction != 0.0:
-                        unit = (1.0 if direction > 0 else -1.0) * period_ret
-                        self._edges[(strat.name, coin)].update(unit)
+                    pos = self._ledger.position(strat.name, coin)
+                    direction = 1 if pos > 0 else -1 if pos < 0 else 0
+                    key = (strat.name, coin)
+                    prev_dir = self._edge_dir.get(key, 0)
+                    if direction != 0:
+                        unit = direction * period_ret
+                        if direction != prev_dir:  # turnover this interval → fee drag
+                            sides = 2 if prev_dir != 0 else 1
+                            unit -= sides * TAKER_FEE
+                        self._edges[key].update(unit)
+                    self._edge_dir[key] = direction
             self._prev_mid[coin] = cur
 
-    def _attribute(self, fill: Fill, targets: dict[tuple[str, str], Decimal]) -> None:
-        """Distribute a netted fill back to strategies pro-rata by their requested
-        delta, settling each at the fill price."""
+    def _attribute(self, fill: Fill, scaled: dict[tuple[str, str], Decimal]) -> None:
+        """Distribute a netted fill back to strategies pro-rata by their *scaled*
+        requested delta. The last contributor takes the exact residual so the
+        shares sum to fill.size precisely (keeps ledger net == executor net)."""
         coin = fill.coin
-        deltas: dict[str, Decimal] = {}
-        for (strat, c), tgt in targets.items():
-            if c != coin:
-                continue
-            deltas[strat] = tgt - self._ledger.position(strat, coin)
-        total = sum(deltas.values(), Decimal(0))
+        deltas = [
+            (s, scaled[(s, c)] - self._ledger.position(s, coin))
+            for (s, c) in scaled
+            if c == coin
+        ]
+        total = sum((d for _s, d in deltas), Decimal(0))
         if total == 0:
             return
-        for strat, d in deltas.items():
-            if d == 0:
-                continue
-            share = fill.size * (d / total)
+        movers = [(s, d) for s, d in deltas if d != 0]
+        allocated = Decimal(0)
+        for i, (strat, d) in enumerate(movers):
+            if i == len(movers) - 1:
+                share = fill.size - allocated
+            else:
+                share = fill.size * d / total
+                allocated += share
             self._ledger.apply_fill(strat, coin, share, fill.price)
+            s = self._by_name.get(strat)
+            if s is not None:
+                s.on_fill(
+                    Fill(
+                        coin=coin,
+                        size=share,
+                        price=fill.price,
+                        time=fill.time,
+                        cloid=fill.cloid,
+                        strategy=strat,
+                    )
+                )
