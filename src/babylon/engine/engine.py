@@ -302,7 +302,14 @@ class Engine:
         total = sum((d for _s, d in deltas), Decimal(0))
         if total == 0:
             return
-        movers = [(s, d) for s, d in deltas if d != 0]
+        # Deterministic order (NOT dict-iteration order) so the residual recipient
+        # is stable and reproducible on replay. Largest |delta| takes the residual
+        # (minimises its relative rounding impact); ties broken by strategy name.
+        # NB: pure pro-rata is correct for FULL fills (paper). Partial fills need
+        # the same-sign-as-net-fills-first rule — a live-executor TODO.
+        movers = sorted(
+            ((s, d) for s, d in deltas if d != 0), key=lambda sd: (abs(sd[1]), sd[0])
+        )
         allocated = Decimal(0)
         for i, (strat, d) in enumerate(movers):
             if i == len(movers) - 1:

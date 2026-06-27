@@ -110,6 +110,38 @@ def test_attribution_invariant_holds_under_deleverage_of_held_position():
     assert ledger.net_position("BTC") == executor.net_position("BTC")  # INVARIANT
 
 
+def _two_strategy_run(seed):
+    rng = np.random.default_rng(seed)
+    market, clock = MarketView(), SimClock()
+    executor, ledger = PaperExecutor(), Ledger(Decimal(100_000))
+    s1 = MACrossover("BTC", fast=2, slow=3, prior_mean=0.002, prior_std=0.004, prior_strength=200)
+    s2 = MACrossover("BTC", fast=2, slow=4, prior_mean=0.002, prior_std=0.004, prior_strength=200)
+    from babylon.exchange.websocket import WebSocketFeed
+
+    engine = Engine(
+        feed=WebSocketFeed(url="wss://example/ws"), market=market, strategies=[s1, s2],
+        sizer=Sizer(fractional=0.25), risk=RiskManager(per_asset_cap=0.5),
+        net_risk=NetRiskManager(max_leverage=1.0, gross_cap=10.0, max_drawdown=0.9),
+        reconciler=Reconciler(min_trade_notional=Decimal(1)), executor=executor,
+        ledger=ledger, clock=clock, budgets={s1.name: 0.5, s2.name: 0.5},
+        rng=rng, interval_s=0.0,
+    )
+    _drive(engine, market, clock, "BTC", [100, 101, 102, 103, 104, 105])
+    return ledger, executor, s1, s2
+
+
+def test_multi_strategy_attribution_in_sync_and_deterministic():
+    ledger, executor, s1, s2 = _two_strategy_run(11)
+    # Invariant holds across the multi-mover residual path.
+    assert ledger.net_position("BTC") == executor.net_position("BTC")
+    # Both strategies are attributed a share (net is sum of the two virtuals).
+    combined = ledger.position(s1.name, "BTC") + ledger.position(s2.name, "BTC")
+    assert combined == ledger.net_position("BTC")
+    # Reproducible: same seed → identical per-strategy attribution (deterministic residual).
+    led2, _ex2, _a, _b = _two_strategy_run(11)
+    assert ledger.position(s1.name, "BTC") == led2.position(s1.name, "BTC")
+
+
 def test_no_leverage_respected_on_net():
     rng = np.random.default_rng(7)
     market, clock = MarketView(), SimClock()

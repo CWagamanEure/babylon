@@ -15,14 +15,16 @@ def test_reconciler_deadband_skips_small():
     assert orders == []
 
 
-def test_reconciler_reduce_only_and_cloid_determinism():
+def test_reconciler_reduce_only_and_unique_cloids():
     rec = Reconciler(min_trade_notional=Decimal(1))
     mk = {"BTC": Decimal(50000)}
     a = rec.diff(net_targets={"BTC": Decimal(0)}, actual={"BTC": Decimal(1)}, marks=mk)
     assert len(a) == 1 and a[0].size == Decimal(-1) and a[0].reduce_only is True
-    # Same (coin, target) on two reconciles → identical cloid (idempotent).
-    b = rec.diff(net_targets={"BTC": Decimal(0)}, actual={"BTC": Decimal(2)}, marks=mk)
-    assert a[0].cloid == b[0].cloid
+    # Different orders that happen to hit the same target get DISTINCT cloids
+    # (a mean-reverting book revisits levels; a reused cloid would be rejected).
+    b = rec.diff(net_targets={"BTC": Decimal("1.5")}, actual={"BTC": Decimal(0)}, marks=mk)
+    c = rec.diff(net_targets={"BTC": Decimal("1.5")}, actual={"BTC": Decimal("1.2")}, marks=mk)
+    assert b[0].cloid != c[0].cloid != a[0].cloid
 
 
 def test_reconciler_open_is_not_reduce_only():
