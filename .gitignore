@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Secrets & config
+.env
+.env.*
+!.env.example
+
+# Data — never commit captured market data or state
+data/
+*.parquet
+*.duckdb
+*.db
+logs/
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
