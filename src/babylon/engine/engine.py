@@ -101,6 +101,7 @@ class Engine:
         self._edge_dir: dict[tuple[str, str], int] = {}  # last edge direction, for fee-on-turnover
         self._fail_count: dict[str, int] = {}
         self._quarantined: set[str] = set()
+        self._last_applied_seq = 0  # journal offset of the last applied event
 
     def stop(self) -> None:
         self._stop.set()
@@ -113,6 +114,36 @@ class Engine:
     def exposure(self) -> BookExposure | None:
         """Latest book exposure snapshot (net directional, concentration, neutrality)."""
         return self._exposure
+
+    # --- durable state (snapshot / restore) ----------------------------------
+
+    def capture_state(self) -> dict[str, Any]:
+        """Full recoverable state at the current `last_applied_seq` cut. Exact
+        Decimal for money (the recovery-critical path)."""
+        return {
+            "last_applied_seq": self._last_applied_seq,
+            "ledger": self._ledger.to_state(),
+            "edges": {f"{s}\t{c}": m.to_state() for (s, c), m in self._edges.items()},
+            "netrisk": self._net_risk.to_state(),
+            "quarantined": sorted(self._quarantined),
+            "edge_dir": [[s, c, d] for (s, c), d in self._edge_dir.items()],
+        }
+
+    def restore_state(self, state: dict[str, Any]) -> None:
+        """Rebuild in-memory state from a snapshot. For paper, the executor net is
+        derived from the restored ledger (single rounding → invariant holds)."""
+        self._last_applied_seq = int(state["last_applied_seq"])
+        self._ledger = Ledger.from_state(state["ledger"])
+        for key, est in state["edges"].items():
+            s, c = key.split("\t", 1)
+            model = self._edges.get((s, c))
+            if model is not None:
+                model.from_state(est)
+        self._net_risk.from_state(state["netrisk"])
+        self._quarantined = set(state["quarantined"])
+        self._edge_dir = {(s, c): int(d) for s, c, d in state["edge_dir"]}
+        for coin in self._coins:
+            self._executor.set_position(coin, self._ledger.net_position(coin))
 
     async def _on_book(self, data: dict[str, Any]) -> None:
         book = L2Book.from_ws(data)

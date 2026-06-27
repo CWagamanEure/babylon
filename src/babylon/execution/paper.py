@@ -25,6 +25,9 @@ class PaperExecutor:
     def net_positions(self) -> dict[str, Decimal]:
         return {c: s for c, s in self._net.items() if s != 0}
 
+    def set_position(self, coin: str, size: Decimal) -> None:
+        self._net[coin] = size
+
     def submit(self, order: Order, quote: Quote, now: int) -> Fill | None:
         if order.size == 0:
             return None

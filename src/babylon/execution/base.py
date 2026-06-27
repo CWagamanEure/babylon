@@ -28,6 +28,10 @@ class Executor(Protocol):
 
     def net_positions(self) -> dict[str, Decimal]: ...
 
+    def set_position(self, coin: str, size: Decimal) -> None:
+        """Restore a net position (paper recovery derives it from the ledger)."""
+        ...
+
     def submit(self, order: Order, quote: Quote, now: int) -> Fill | None:
         """Execute an order; return the resulting fill (None if it didn't fill)."""
         ...

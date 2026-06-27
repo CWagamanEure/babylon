@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
 
 
 @dataclass
@@ -76,3 +77,21 @@ class Ledger:
 
     def equity(self, marks: dict[str, Decimal]) -> Decimal:
         return self._start + self.realized_pnl() + self.unrealized_pnl(marks)
+
+    # --- durable state (exact Decimal; see docs/JOURNAL.md) -------------------
+
+    def to_state(self) -> dict[str, Any]:
+        return {
+            "start": str(self._start),
+            "pos": [
+                [s, c, str(p.size), str(p.entry_px), str(p.realized)]
+                for (s, c), p in self._pos.items()
+            ],
+        }
+
+    @classmethod
+    def from_state(cls, st: dict[str, Any]) -> Ledger:
+        led = cls(Decimal(st["start"]))
+        for s, c, size, entry, realized in st["pos"]:
+            led._pos[(s, c)] = Position(Decimal(size), Decimal(entry), Decimal(realized))
+        return led

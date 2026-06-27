@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
@@ -48,6 +48,8 @@ class EdgeEstimate:
 class EdgeModel(Protocol):
     def estimate(self) -> EdgeEstimate: ...
     def update(self, unit_return: float) -> None: ...
+    def to_state(self) -> dict[str, Any]: ...
+    def from_state(self, st: dict[str, Any]) -> None: ...
 
 
 class BootstrapEdgeModel:
@@ -93,3 +95,19 @@ class BootstrapEdgeModel:
         if draws.size == 0:
             draws = np.zeros(1, dtype=np.float64)
         return EdgeEstimate(draws=draws, n_effective=n_effective)
+
+    # --- durable state ------------------------------------------------------
+    # The prior draws are regenerated from the seed (NOT journaled); only the
+    # observed returns + strength are durable. ``from_state`` restores them onto
+    # an already-seeded model, rebuilding the deque with its maxlen.
+
+    def to_state(self) -> dict[str, Any]:
+        return {
+            "prior_strength": self._prior_strength,
+            "maxlen": self._observed.maxlen,
+            "observed": list(self._observed),
+        }
+
+    def from_state(self, st: dict[str, Any]) -> None:
+        self._prior_strength = int(st["prior_strength"])
+        self._observed = deque(st["observed"], maxlen=st["maxlen"])

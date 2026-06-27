@@ -44,6 +44,15 @@ class NetRiskManager:
         """Clear a latched halt (operator action)."""
         self._halted = False
 
+    def to_state(self) -> dict[str, object]:
+        hw = self._high_water
+        return {"high_water": str(hw) if hw is not None else None, "halted": self._halted}
+
+    def from_state(self, st: dict[str, object]) -> None:
+        hw = st["high_water"]
+        self._high_water = Decimal(str(hw)) if hw is not None else None
+        self._halted = bool(st["halted"])
+
     def review(
         self,
         *,
