@@ -46,8 +46,28 @@ def test_follow_strategy_emits_edge_weighted_consensus():
                            edge_mean=0.001, edge_std=0.01)
     ctx = _Ctx()
     strat.on_bar(ctx)  # type: ignore[arg-type]
-    # BTC: 0.6+0.4 = +1.0 → long ; SOL: -0.6+0.4 = -0.2 → short ; ETH: flat → no signal
-    assert ctx.sig == {"BTC": 1.0, "SOL": -1.0}
+    # consensus VALUE: BTC 0.6+0.4 = +1.0 ; SOL -0.6+0.4 = -0.2 ; ETH flat → no signal
+    assert ctx.sig["BTC"] == 1.0 and abs(ctx.sig["SOL"] - (-0.2)) < 1e-12
+    assert "ETH" not in ctx.sig
+
+
+def test_fixed_fraction_sizer_ignores_edge_units():
+    from decimal import Decimal
+
+    from babylon.sizing.sizer import FixedFractionSizer
+    s = FixedFractionSizer(per_coin_fraction=0.1)
+    huge = FrozenEdge.from_gaussian(np.random.default_rng(0), mean=0.5, std=0.01, strength=20)
+    # full consensus → 10% of budget regardless of the (huge) edge — no Kelly knife-edge
+    sz = s.target_size(edge=huge.estimate(), direction=1.0,
+                       budget_equity=Decimal(100_000), mark_price=Decimal(100))
+    assert sz == Decimal(100)  # 0.1 × 100000 / 100
+    # half-strength consensus, short → scaled by magnitude
+    sz2 = s.target_size(edge=FrozenEdge([0.0], 0).estimate(), direction=-0.5,
+                        budget_equity=Decimal(100_000), mark_price=Decimal(100))
+    assert sz2 == Decimal(-50)
+    # flat → no position
+    assert s.target_size(edge=huge.estimate(), direction=0.0,
+                         budget_equity=Decimal(100_000), mark_price=Decimal(100)) == Decimal(0)
 
 
 def test_follow_strategy_edge_model_is_frozen():

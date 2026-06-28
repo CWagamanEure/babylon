@@ -16,7 +16,11 @@ from babylon.execution.base import Quote
 
 
 class PaperExecutor:
-    def __init__(self) -> None:
+    def __init__(self, *, taker_fee_bps: float = 0.0) -> None:
+        # taker_fee_bps folds the fee INTO the fill price so the equity curve actually
+        # pays it (else equity is fee-blind — the live-follow audit's finding). Default
+        # 0 preserves the original fill-at-touch behaviour for existing paper runs.
+        self._fee = Decimal(str(taker_fee_bps)) / Decimal(10_000)
         self._net: dict[str, Decimal] = defaultdict(lambda: Decimal(0))
 
     def net_position(self, coin: str) -> Decimal:
@@ -31,8 +35,12 @@ class PaperExecutor:
     def submit(self, order: Order, quote: Quote, now: int) -> Fill | None:
         if order.size == 0:
             return None
-        # Taker: pay the spread.
-        price = quote.ask if order.is_buy else quote.bid
+        # Taker: pay the spread, and the taker fee folded into the price (a buy pays
+        # more, a sell receives less) so realized PnL/equity reflect the fee.
+        if order.is_buy:
+            price = quote.ask * (Decimal(1) + self._fee)
+        else:
+            price = quote.bid * (Decimal(1) - self._fee)
         self._net[order.coin] += order.size
         return Fill(
             coin=order.coin,

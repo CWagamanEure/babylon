@@ -47,3 +47,28 @@ class Sizer:
         notional = budget_equity * Decimal(str(f))
         size = notional / mark_price
         return size if direction > 0 else -size
+
+
+class FixedFractionSizer(Sizer):
+    """Sizes by a FIXED fraction of budget equity per signalled coin, ignoring the
+    EdgeModel's Kelly — for copy-following. Per the live-follow audit, per-tick Kelly
+    cannot size a per-round-trip, multi-hour copy edge (it floors to $0 or pins at
+    100%). Here each followed coin gets ``per_coin_fraction`` × |direction| of budget;
+    the NetRiskManager caps total gross/net, so a wide book scales down uniformly
+    rather than levering up. ``direction``'s sign sets long/short, its magnitude
+    (the consensus strength, ≤1) scales the clip."""
+
+    def __init__(self, *, per_coin_fraction: float = 0.1, max_fraction: float = 1.0) -> None:
+        super().__init__(fractional=per_coin_fraction, max_fraction=max_fraction)
+        self._per_coin = per_coin_fraction
+
+    def target_size(
+        self, *, edge: EdgeEstimate, direction: float,
+        budget_equity: Decimal, mark_price: Decimal,
+    ) -> Decimal:
+        if direction == 0.0 or mark_price <= 0:
+            return Decimal(0)
+        f = min(abs(direction), 1.0) * self._per_coin
+        notional = budget_equity * Decimal(str(f))
+        size = notional / mark_price
+        return size if direction > 0 else -size

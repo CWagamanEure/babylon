@@ -36,8 +36,9 @@ class FollowStrategy(Strategy):
     def on_bar(self, ctx: Context) -> None:
         for coin in self.universe:
             c = self._watcher.consensus_sign(coin, self._weights)
-            if c > 0:
-                ctx.signal(coin, 1.0)
-            elif c < 0:
-                ctx.signal(coin, -1.0)
+            if c != 0.0:
+                # Emit the consensus VALUE (sign = direction, |magnitude| ≤ 1 = how much
+                # of the followed edge-weighted book agrees) so a FixedFractionSizer can
+                # scale by conviction; the engine uses its sign for direction.
+                ctx.signal(coin, c)
             # flat consensus → emit nothing (skip the engine's cold-edge path)
