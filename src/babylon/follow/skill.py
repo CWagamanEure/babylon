@@ -51,14 +51,23 @@ class WalletSkill:
 
 
 def reconstruct(
-    times: np.ndarray, px: np.ndarray, sz: np.ndarray, side: np.ndarray, crossed: np.ndarray
+    times: np.ndarray, px: np.ndarray, sz: np.ndarray, side: np.ndarray,
+    crossed: np.ndarray, startpos: np.ndarray | None = None,
 ) -> list[Position]:
-    """Round-trip positions for one coin (signed-contract state machine)."""
+    """Round-trip positions for one coin (signed-contract state machine).
+
+    Seeded from ``startpos[0]`` (the position BEFORE the first fill) — if the window
+    opens mid-position the leading position's open is pre-window/unobserved, so it is
+    reconstructed but NOT emitted (its entry basis is unknown). ``pos`` is reset to
+    EXACT 0 on close so a within-tolerance float residual can't leak the prior
+    position's entry_t/taker_open into the next one.
+    """
     signed = np.where(side == "B", sz, -sz)
     max_abs = float(np.abs(np.cumsum(signed)).max()) if signed.size else 0.0
     tol = max(_REL_TOL * max_abs, 1e-15)
     out: list[Position] = []
-    pos = 0.0
+    pos = float(startpos[0]) if startpos is not None and startpos.size else 0.0
+    valid = abs(pos) < tol  # only emit positions whose open we actually observed
     en = es = xn = xs = 0.0  # entry/exit notional & size of the OPEN position
     et = 0
     topen = False
@@ -66,7 +75,7 @@ def reconstruct(
         d = float(signed[i])
         if pos == 0.0 or (d > 0) == (pos > 0):  # opening (from flat, or adding same side)
             if pos == 0.0:
-                et, topen, en, es = int(times[i]), bool(crossed[i]), 0.0, 0.0
+                et, topen, en, es, valid = int(times[i]), bool(crossed[i]), 0.0, 0.0, True
             en += abs(d) * float(px[i])
             es += abs(d)
             pos += d
@@ -77,12 +86,13 @@ def reconstruct(
             xs += close
             pos += close if pos < 0 else -close
             if abs(pos) < tol:  # position closed
-                if es > 0 and xs > 0:
+                if valid and es > 0 and xs > 0:
                     out.append(Position(held_dir, en / es, xn / xs, et, int(times[i]), topen))
                 en = es = xn = xs = 0.0
+                pos = 0.0  # exact flat — don't let a float residual stale the next open
                 leftover = abs(d) - close
                 if leftover > tol:  # flip → open the opposite side
-                    et, topen = int(times[i]), bool(crossed[i])
+                    et, topen, valid = int(times[i]), bool(crossed[i]), True
                     en, es = leftover * float(px[i]), leftover
                     pos = leftover if d > 0 else -leftover
     return out
@@ -102,7 +112,7 @@ def wallet_skill(
         g = g.sort("time")
         positions = reconstruct(
             g["time"].to_numpy(), g["px"].to_numpy(), g["sz"].to_numpy(),
-            g["side"].to_numpy(), g["crossed"].to_numpy(),
+            g["side"].to_numpy(), g["crossed"].to_numpy(), g["startPosition"].to_numpy(),
         )
         got = False
         for p in positions:
@@ -138,10 +148,13 @@ def build_basket(candles_dir: Path, coins: list[str]) -> tuple[np.ndarray, np.nd
         aligned = np.full(grid.size, np.nan)
         aligned[idx] = close
         aligned = _ffill(aligned)
-        r = np.zeros(grid.size)
-        r[1:] = np.where(aligned[:-1] > 0, aligned[1:] / aligned[:-1] - 1.0, 0.0)
+        # NaN (not 0) before a coin's first candle so it's EXCLUDED from the
+        # equal-weight average — counting a not-yet-listed coin's flat 0-returns
+        # dilutes the basket and under-neutralizes across listing events.
+        r = np.full(grid.size, np.nan)
+        r[1:] = np.where(aligned[:-1] > 0, aligned[1:] / aligned[:-1] - 1.0, np.nan)
         good = np.isfinite(r)
-        rets[good] += np.nan_to_num(r[good])
+        rets[good] += r[good]
         counts[good] += 1
     avg = np.where(counts > 0, rets / np.maximum(counts, 1), 0.0)
     return grid, np.cumprod(1.0 + avg)
