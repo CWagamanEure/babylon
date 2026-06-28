@@ -13,8 +13,9 @@ venv/
 .env.*
 !.env.example
 
-# Data — never commit captured market data or state
-data/
+# Data — never commit captured market data or state (anchored to repo root so it
+# does NOT match the src/babylon/data/ source package)
+/data/
 *.parquet
 *.duckdb
 *.db

@@ -87,3 +87,12 @@ class InfoClient:
     async def open_orders(self, address: str) -> list[dict[str, Any]]:
         body = {"type": "openOrders", "user": address}
         return cast("list[dict[str, Any]]", await self._post(body))
+
+    async def user_fills_by_time(
+        self, address: str, start_ms: int, end_ms: int
+    ) -> list[dict[str, Any]]:
+        """A wallet's fills in [start_ms, end_ms], ascending by time, capped at 2000
+        per call (paginate by advancing start past the last fill's time)."""
+        body = {"type": "userFillsByTime", "user": address,
+                "startTime": start_ms, "endTime": end_ms}
+        return cast("list[dict[str, Any]]", await self._post(body))
