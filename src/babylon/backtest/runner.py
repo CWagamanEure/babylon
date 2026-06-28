@@ -66,6 +66,8 @@ class BacktestResult:
     account: Metrics | None
     per_strategy: dict[str, Metrics]
     gates: dict[str, GateResult]
+    traded: bool  # any fills at all — a no-trade run has no metrics, not a broken report
+    aborted: bool = False  # invariant break mid-run (results are not trustworthy)
     fill_model_version: int = FILL_MODEL_VERSION
     honesty: tuple[str, ...] = HONESTY_FLAGS
 
@@ -95,6 +97,7 @@ class Backtester:
         last_update: dict[str, int] = {}
         n_events = n_ticks = gaps = 0
         exposure_nh = 0.0
+        aborted = False
 
         for ev in self._replay.events():
             t = ev.time
@@ -109,6 +112,15 @@ class Backtester:
                 exposure_nh += self._tick(next_tick, last_update, n_ticks)
                 n_ticks += 1
                 next_tick += cfg.interval_ms
+                # The engine sets _stop on a ledger≠executor invariant break. The
+                # paper loop watches _stop; this driver must too, or a desync would
+                # silently corrupt every subsequent tick. Abort loudly.
+                if eng._stop.is_set():
+                    log.error("backtest.aborted_invariant_break", tick=n_ticks)
+                    aborted = True
+                    break
+            if aborted:
+                break
             # Apply this event into the market + the executor's depth book (atomically).
             eng._market.update(ev.coin, Decimal(str(ev.book.best_bid)),
                                Decimal(str(ev.book.best_ask)))
@@ -117,7 +129,7 @@ class Backtester:
             last_event_t = t
             n_events += 1
 
-        return self._result(n_events, n_ticks, gaps, exposure_nh)
+        return self._result(n_events, n_ticks, gaps, exposure_nh, aborted)
 
     def _tick(self, now: int, last_update: dict[str, int], n_ticks: int) -> float:
         eng = self._engine
@@ -131,9 +143,12 @@ class Backtester:
         eng._tick()
         if eng._kill is not None and eng._tick_id % eng._snapshot_every == 0:
             eng._evaluate_kills(now)
-        # Warmup boundary: drop warmup ticks from the measured curve.
+        # Warmup boundary: drop warmup ticks from the measured curve. Also clear the
+        # engine's last-sample cache, else a flat post-warmup equity equal to the
+        # stale pre-reset value would be deduped away (→ 0 samples → None metrics).
         if n_ticks + 1 == cfg.warmup:
             eng._perf.reset()
+            eng._last_perf_sample = {}
         # Net-exposure integral (bounds the unmodeled funding).
         notional = 0.0
         for coin, pos in self._executor.net_positions().items():
@@ -142,7 +157,9 @@ class Backtester:
                 notional += abs(float(pos) * float(mark))
         return notional * (cfg.interval_ms / 3_600_000.0)
 
-    def _result(self, n_events: int, n_ticks: int, gaps: int, exposure_nh: float) -> BacktestResult:
+    def _result(
+        self, n_events: int, n_ticks: int, gaps: int, exposure_nh: float, aborted: bool
+    ) -> BacktestResult:
         eng = self._engine
         rng = np.random.default_rng(self._cfg.seed)
         per_strategy: dict[str, Metrics] = {}
@@ -163,4 +180,5 @@ class Backtester:
             no_fill_reasons=dict(self._executor.no_fill_reasons),
             net_exposure_notional_hours=exposure_nh,
             account=eng._perf.metrics(ACCOUNT), per_strategy=per_strategy, gates=gates,
+            traded=self._executor.fills > 0, aborted=aborted,
         )

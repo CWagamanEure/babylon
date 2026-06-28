@@ -263,6 +263,16 @@ def _render_backtest(r: BacktestResult) -> None:
         f"(warmup {r.warmup}, {r.gaps} gaps, {r.skipped_books:,} bad books skipped)"
     )
     console.print(f"[bold]{head}[/bold]")
+    if r.aborted:
+        console.print("[red]⚠ RUN ABORTED on a ledger≠executor invariant break — "
+                      "results below are INCOMPLETE and not trustworthy.[/red]")
+    if not r.traded:
+        console.print(
+            "[yellow]No trades executed[/yellow] — the strategy sized to zero the whole "
+            "run (cold edge prior, or signal never fired). No performance to report. "
+            "Try a longer range, a stronger prior, or check the data."
+        )
+        return
 
     table = Table(title="Performance (post-warmup)")
     table.add_column("strategy")

@@ -71,6 +71,50 @@ def test_backtest_is_deterministic(tmp_path):
     assert a.fills == b.fills and a.n_ticks == b.n_ticks
 
 
+def test_no_trade_run_reports_gracefully(tmp_path):
+    # Flat price → momentum sizes to zero → no fills. Must not crash, and must flag
+    # traded=False (so the report says "no trades" instead of an empty table).
+    store = ParquetStore(tmp_path)
+    for i in range(400):
+        store.write("l2Book", "BTC", dict(
+            time=BASE + i * 1000, ver_num=i, best_bid=29_999.0, best_ask=30_001.0, mid=30_000.0,
+            bid_px=[29_999.0, 29_998.0], bid_sz=[5.0, 10.0], bid_n=[1, 1],
+            ask_px=[30_001.0, 30_002.0], ask_sz=[5.0, 10.0], ask_n=[1, 1],
+        ))
+    store.flush()
+    res = _run(tmp_path)
+    assert res.fills == 0 and not res.traded
+    assert res.n_ticks > 0  # ran, just didn't trade
+
+
+def test_driver_aborts_on_invariant_break(tmp_path):
+    # The engine sets _stop on a ledger≠executor desync; the driver must abort, not
+    # silently keep producing corrupt ticks.
+    _write_trend(ParquetStore(tmp_path))
+    strat = Momentum("BTC", lookback=20)
+    ex = BacktestExecutor(slippage_bps=1.0, max_depth_fraction=0.5)
+    eng = Engine(
+        feed=NullFeed(), market=MarketView(), strategies=[strat], sizer=Sizer(),
+        risk=RiskManager(), net_risk=NetRiskManager(),
+        reconciler=Reconciler(min_trade_notional=Decimal(10)), executor=ex,
+        ledger=Ledger(Decimal(100_000)), clock=SimClock(), budgets={strat.name: 1.0},
+        rng=np.random.default_rng(0), interval_s=0.0,
+    )
+    real_tick, calls = eng._tick, {"n": 0}
+
+    def trip(*a, **k):
+        calls["n"] += 1
+        real_tick(*a, **k)
+        if calls["n"] == 5:
+            eng._stop.set()  # simulate an invariant break
+
+    eng._tick = trip  # type: ignore[method-assign]
+    cfg = BacktestConfig(start="20260601", end="20260601", interval_ms=2000, warmup=0)
+    replay = L2Replay(tmp_path, ["BTC"], "20260601", "20260601")
+    res = Backtester(eng, ex, replay, eng._clock, cfg).run()
+    assert res.aborted and res.n_ticks == 5  # stopped right at the break, not ~300
+
+
 def test_backtest_suppresses_ticks_across_data_gap(tmp_path):
     # Without suppression a 5-min gap at interval 2s would inject ~150 phantom ticks.
     _write_trend(ParquetStore(tmp_path), gap_at=300)
