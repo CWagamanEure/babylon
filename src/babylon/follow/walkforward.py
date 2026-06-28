@@ -35,11 +35,16 @@ def evaluate(
     train: tuple[int, int],
     follow: tuple[int, int],
     *,
+    universe: set[str],
+    basket: tuple[np.ndarray, np.ndarray] | None = None,
+    taker_only: bool = True,
     min_positions: int = 20,
     csv_top: set[str] | None = None,
 ) -> Persistence:
-    train_rank = rank_wallets(fills_dir, *train, min_positions=min_positions)
-    follow_rank = rank_wallets(fills_dir, *follow, min_positions=min_positions)
+    kw = {"universe": universe, "basket": basket, "taker_only": taker_only,
+          "min_positions": min_positions}
+    train_rank = rank_wallets(fills_dir, *train, **kw)  # type: ignore[arg-type]
+    follow_rank = rank_wallets(fills_dir, *follow, **kw)  # type: ignore[arg-type]
     if train_rank.is_empty() or follow_rank.is_empty():
         return Persistence(0, 0.0, 0.0, 0.0, 0.0, None)
 

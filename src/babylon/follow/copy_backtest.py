@@ -139,14 +139,16 @@ def copy_backtest(
 def run_walkforward(
     fills_dir: Path, candles_dir: Path,
     train: tuple[int, int], follow: tuple[int, int], *,
-    min_positions: int = 20, kelly_fraction: float = 0.5,
+    universe: set[str], basket: tuple[np.ndarray, np.ndarray] | None = None,
+    taker_only: bool = True, min_positions: int = 20, kelly_fraction: float = 0.5,
     cost_by_coin: dict[str, float] | None = None, default_cost_bps: float = 15.0,
 ) -> tuple[CopyResult, int]:
     """Full pipeline: rank skill on the TRAIN window, follow the train-top-quintile
     on the FOLLOW window. Returns (result, n_pool) where n_pool is the ranked pool
     size the quintile was drawn from. The selector is the train ranking — NEVER the
     in-sample CSV."""
-    rank = rank_wallets(fills_dir, *train, min_positions=min_positions)
+    rank = rank_wallets(fills_dir, *train, universe=universe, basket=basket,
+                        taker_only=taker_only, min_positions=min_positions)
     top = rank.filter(pl.col("top_quintile"))
     edges = {r["wallet"]: float(r["median_bps"]) for r in top.to_dicts()}
     result = copy_backtest(

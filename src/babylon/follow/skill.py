@@ -1,15 +1,17 @@
-"""Re-derive each follow-wallet's skill from its fills, over a chosen window.
+"""Re-derive each follow-wallet's skill from its fills — measured correctly.
 
-Skill = the wallet's per-round-trip realized return in basis points. We reconstruct
-positions per coin from the fill stream (open → … → flat is one position; a sign
-flip closes one and opens the next), summing HL's per-fill ``closedPnl`` for the
-realized PnL and the opening notional for the denominator. The per-wallet statistic
-is the MEDIAN per-position bps (robust to the fat right tail), matching the column
-in ``follow_wallets.csv`` so the re-derived ranking can be sanity-checked against it.
+Skill = MEDIAN per-round-trip return in bps, MARKET-NEUTRALIZED against the
+equal-weight liquid-alt basket (the raw number is mostly beta — big but fake; the
+neutralized number is the real, smaller edge). A "position" is flat→open→…→flat
+(or a sign flip) tracked in signed CONTRACTS with a RELATIVE flat tolerance
+(absolute fails on billion-supply meme alts). Only TAKER-opened positions count
+(crossing the spread = conviction; maker opens are liquidity provision and dilute).
+Coins are restricted to the alt universe (majors/spot/junk leak noise).
 
-CRITICAL (walk-forward): always derive skill on a TRAIN window and follow the top
-quintile on a DISJOINT later window — ranking and testing on the same data is the
-selection bias this is built to avoid.
+neut_bps = dir·(coin_ret − β·basket_ret) over the hold, β default 1.
+
+CRITICAL (walk-forward): rank skill on a TRAIN window, follow the top quintile on a
+DISJOINT later window — selection on the same data is the bias this avoids.
 """
 
 from __future__ import annotations
@@ -20,7 +22,23 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-_FLAT = 1e-9
+_REL_TOL = 1e-9  # flat when |net| < _REL_TOL · max|net| (relative — meme-coin safe)
+
+
+@dataclass(frozen=True, slots=True)
+class Position:
+    direction: int  # +1 long / -1 short
+    entry_px: float
+    exit_px: float
+    entry_t: int
+    exit_t: int
+    taker_open: bool  # opening fill crossed the spread (conviction)
+
+    @property
+    def raw_bps(self) -> float:
+        if self.entry_px <= 0:
+            return 0.0
+        return self.direction * (self.exit_px - self.entry_px) / self.entry_px * 1e4
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,66 +50,137 @@ class WalletSkill:
     n_coins: int
 
 
-def _coin_positions(px: list[float], sz: list[float], side: list[str],
-                    closed: list[float]) -> list[tuple[float, float]]:
-    """Round-trip positions for one coin → list of (realized_pnl, opening_notional)."""
-    out: list[tuple[float, float]] = []
+def reconstruct(
+    times: np.ndarray, px: np.ndarray, sz: np.ndarray, side: np.ndarray, crossed: np.ndarray
+) -> list[Position]:
+    """Round-trip positions for one coin (signed-contract state machine)."""
+    signed = np.where(side == "B", sz, -sz)
+    max_abs = float(np.abs(np.cumsum(signed)).max()) if signed.size else 0.0
+    tol = max(_REL_TOL * max_abs, 1e-15)
+    out: list[Position] = []
     pos = 0.0
-    realized = 0.0
-    open_notional = 0.0
-    for p, s, sd, cl in zip(px, sz, side, closed, strict=True):
-        delta = s if sd == "B" else -s
-        if pos != 0.0 and (delta < 0) != (pos < 0):  # opposite sign → closing (maybe flip)
-            realized += cl
-            close_amt = min(abs(delta), abs(pos))
-            leftover = abs(delta) - close_amt
-            pos += close_amt if pos < 0 else -close_amt
-            if abs(pos) < _FLAT:  # position fully closed
-                if open_notional > 0:
-                    out.append((realized, open_notional))
-                realized, open_notional = 0.0, 0.0
-                if leftover > _FLAT:  # flip → open the opposite side
-                    open_notional += leftover * p
-                    pos = leftover if delta > 0 else -leftover
-        else:  # opening (same sign, or from flat)
-            open_notional += abs(delta) * p
-            pos += delta
-            realized += cl  # ~0 on opens; harmless
+    en = es = xn = xs = 0.0  # entry/exit notional & size of the OPEN position
+    et = 0
+    topen = False
+    for i in range(times.size):
+        d = float(signed[i])
+        if pos == 0.0 or (d > 0) == (pos > 0):  # opening (from flat, or adding same side)
+            if pos == 0.0:
+                et, topen, en, es = int(times[i]), bool(crossed[i]), 0.0, 0.0
+            en += abs(d) * float(px[i])
+            es += abs(d)
+            pos += d
+        else:  # opposite sign → closing (maybe a flip)
+            held_dir = 1 if pos > 0 else -1
+            close = min(abs(d), abs(pos))
+            xn += close * float(px[i])
+            xs += close
+            pos += close if pos < 0 else -close
+            if abs(pos) < tol:  # position closed
+                if es > 0 and xs > 0:
+                    out.append(Position(held_dir, en / es, xn / xs, et, int(times[i]), topen))
+                en = es = xn = xs = 0.0
+                leftover = abs(d) - close
+                if leftover > tol:  # flip → open the opposite side
+                    et, topen = int(times[i]), bool(crossed[i])
+                    en, es = leftover * float(px[i]), leftover
+                    pos = leftover if d > 0 else -leftover
     return out
 
 
-def wallet_skill(wallet: str, df: pl.DataFrame) -> WalletSkill:
-    """Skill stats for one wallet over the fills in ``df`` (already window-filtered)."""
+def wallet_skill(
+    wallet: str, df: pl.DataFrame, *,
+    universe: set[str], basket: tuple[np.ndarray, np.ndarray] | None,
+    taker_only: bool = True, beta: float = 1.0,
+) -> WalletSkill:
+    """Median neutralized round-trip bps over taker-opened positions in the universe."""
     bps: list[float] = []
     coins = 0
-    for _coin, g in df.sort("time").group_by("coin", maintain_order=True):
-        positions = _coin_positions(
-            g["px"].to_list(), g["sz"].to_list(), g["side"].to_list(), g["closedPnl"].to_list()
+    for (coin,), g in df.sort("time").group_by("coin", maintain_order=True):
+        if str(coin) not in universe:
+            continue  # majors / spot / junk excluded
+        g = g.sort("time")
+        positions = reconstruct(
+            g["time"].to_numpy(), g["px"].to_numpy(), g["sz"].to_numpy(),
+            g["side"].to_numpy(), g["crossed"].to_numpy(),
         )
-        rets = [pnl / notion * 1e4 for pnl, notion in positions if notion > 0]
-        if rets:
-            coins += 1
-            bps.extend(rets)
+        got = False
+        for p in positions:
+            if taker_only and not p.taker_open:
+                continue
+            neut = p.raw_bps
+            if basket is not None:
+                neut -= p.direction * beta * _basket_ret_bps(basket, p.entry_t, p.exit_t)
+            bps.append(neut)
+            got = True
+        coins += got
     if not bps:
         return WalletSkill(wallet, 0.0, 0.0, 0, 0)
     arr = np.asarray(bps, dtype=np.float64)
     return WalletSkill(wallet, float(np.median(arr)), float(arr.mean()), arr.size, coins)
 
 
+def build_basket(candles_dir: Path, coins: list[str]) -> tuple[np.ndarray, np.ndarray]:
+    """Equal-weight hourly return index of the given (liquid) coins → (times, index)."""
+    series = {}
+    for c in coins:
+        f = candles_dir / f"{c}.parquet"
+        if f.exists():
+            df = pl.read_parquet(f).sort("time")
+            series[c] = (df["time"].to_numpy(), df["close"].to_numpy())
+    if not series:
+        return np.array([0]), np.array([1.0])
+    grid = np.unique(np.concatenate([t for t, _ in series.values()]))
+    rets = np.zeros(grid.size)
+    counts = np.zeros(grid.size)
+    for t, close in series.values():
+        idx = np.searchsorted(grid, t)
+        aligned = np.full(grid.size, np.nan)
+        aligned[idx] = close
+        aligned = _ffill(aligned)
+        r = np.zeros(grid.size)
+        r[1:] = np.where(aligned[:-1] > 0, aligned[1:] / aligned[:-1] - 1.0, 0.0)
+        good = np.isfinite(r)
+        rets[good] += np.nan_to_num(r[good])
+        counts[good] += 1
+    avg = np.where(counts > 0, rets / np.maximum(counts, 1), 0.0)
+    return grid, np.cumprod(1.0 + avg)
+
+
+def _basket_ret_bps(basket: tuple[np.ndarray, np.ndarray], t0: int, t1: int) -> float:
+    times, index = basket
+    i0 = int(np.searchsorted(times, t0, side="right")) - 1
+    i1 = int(np.searchsorted(times, t1, side="right")) - 1
+    if i0 < 0 or i1 < 0 or i0 >= index.size or i1 >= index.size or index[i0] <= 0:
+        return 0.0
+    return float(index[i1] / index[i0] - 1.0) * 1e4
+
+
+def _ffill(a: np.ndarray) -> np.ndarray:
+    last = np.nan
+    for i in range(a.size):
+        if np.isnan(a[i]):
+            a[i] = last
+        else:
+            last = a[i]
+    return a
+
+
 def rank_wallets(
-    fills_dir: Path, start_ms: int, end_ms: int, *, min_positions: int = 20
+    fills_dir: Path, start_ms: int, end_ms: int, *,
+    universe: set[str], basket: tuple[np.ndarray, np.ndarray] | None = None,
+    taker_only: bool = True, beta: float = 1.0, min_positions: int = 20,
 ) -> pl.DataFrame:
-    """Rank every fetched wallet by median per-position bps over [start_ms, end_ms].
-    Wallets with < ``min_positions`` completed round-trips are dropped (noisy)."""
+    """Rank wallets by median neutralized bps over [start_ms, end_ms]."""
     rows = []
     for f in sorted(fills_dir.glob("*.parquet")):
-        wallet = f.stem
         df = pl.read_parquet(f).filter(
             (pl.col("time") >= start_ms) & (pl.col("time") < end_ms)
         )
         if df.height == 0:
             continue
-        sk = wallet_skill(wallet, df)
+        sk = wallet_skill(f.stem, df, universe=universe, basket=basket,
+                          taker_only=taker_only, beta=beta)
         if sk.n_positions >= min_positions:
             rows.append(sk)
     if not rows:
