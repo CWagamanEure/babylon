@@ -22,6 +22,7 @@ planned hardening.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import Sequence
 from decimal import ROUND_HALF_EVEN, Decimal
@@ -53,6 +54,14 @@ from babylon.strategy.base import Strategy
 log = get_logger("engine")
 
 QUARANTINE_AFTER = 3  # consecutive strategy failures before it's benched
+
+
+def _child_rng(base: int, name: str, coin: str) -> np.random.Generator:
+    """Deterministic per-(strategy, coin) RNG from a stable name hash (blake2b, not
+    Python's salted hash() — must be identical across processes)."""
+    key = f"{name}\x00{coin}".encode()
+    h = int.from_bytes(hashlib.blake2b(key, digest_size=8).digest(), "big")
+    return np.random.default_rng(np.random.SeedSequence([base, h]))
 
 
 class Engine:
@@ -118,12 +127,13 @@ class Engine:
         self._fills = 0
 
         self._coins = sorted({c for s in strategies for c in s.universe})
-        # Independent child RNG per strategy, keyed to the SORTED strategy name so
-        # the prior draws are invariant to --coin/strategy ORDER (reproducibility).
-        ordered = sorted(strategies, key=lambda s: s.name)
-        children = dict(zip([s.name for s in ordered], rng.spawn(len(ordered)), strict=True))
+        # Each (strategy, coin) edge model gets a child RNG seeded from a STABLE hash
+        # of (base, name, coin) — so the draws are invariant to BOTH order AND roster
+        # membership: adding/removing a strategy never shifts another's prior. `base`
+        # is drawn once from the passed rng so the whole run stays seed-reproducible.
+        base = int(rng.integers(0, 2**63 - 1))
         self._edges: dict[tuple[str, str], EdgeModel] = {
-            (s.name, c): s.make_edge_model(c, children[s.name])
+            (s.name, c): s.make_edge_model(c, _child_rng(base, s.name, c))
             for s in strategies
             for c in s.universe
         }

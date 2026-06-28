@@ -72,6 +72,8 @@ class BacktestResult:
     gates: dict[str, GateResult]
     traded: bool  # any fills at all — a no-trade run has no metrics, not a broken report
     aborted: bool = False  # invariant break mid-run (results are not trustworthy)
+    warmup_incomplete: bool = False  # warmup >= total ticks → no measured window
+    no_fill_rate: float = 0.0  # fraction of order attempts that couldn't fill
     fill_model_version: int = FILL_MODEL_VERSION
     honesty: tuple[str, ...] = HONESTY_FLAGS
 
@@ -95,6 +97,8 @@ class Backtester:
         eng = self._engine
         cfg = self._cfg
         eng.start()
+        # "warmed" once the warmup window is dropped; warmup=0 means measure everything.
+        self._warmed = cfg.warmup == 0
 
         next_tick: int | None = None
         last_event_t: int | None = None
@@ -161,6 +165,8 @@ class Backtester:
         if n_ticks + 1 == cfg.warmup:
             eng._perf.reset()
             eng._last_perf_sample = {}
+            eng._net_risk.rebaseline()  # measure account DD from the post-warmup peak too
+            self._warmed = True
         # Net-exposure integral (bounds the unmodeled funding).
         notional = 0.0
         for coin, pos in self._executor.net_positions().items():
@@ -176,12 +182,17 @@ class Backtester:
         rng = np.random.default_rng(self._cfg.seed)
         per_strategy: dict[str, Metrics] = {}
         gates: dict[str, GateResult] = {}
-        for s in eng._strategies:
-            m = eng._perf.metrics(s.name)
-            if m is not None:
-                per_strategy[s.name] = m
-            gates[s.name] = log_growth_gate(eng._perf.unit_returns(s.name), rng)
+        # If warmup never completed (warmup >= total ticks) the measured window is
+        # entirely warmup ticks — report no metrics rather than warmup-polluted ones.
+        if self._warmed:
+            for s in eng._strategies:
+                m = eng._perf.metrics(s.name)
+                if m is not None:
+                    per_strategy[s.name] = m
+                gates[s.name] = log_growth_gate(eng._perf.unit_returns(s.name), rng)
+        account = eng._perf.metrics(ACCOUNT) if self._warmed else None
         fracs = self._executor.depth_fractions
+        attempts = self._executor.fills + self._executor.no_fills
         return BacktestResult(
             coins=list(eng._coins), start=self._cfg.start, end=self._cfg.end,
             interval_ms=self._cfg.interval_ms, warmup=self._cfg.warmup,
@@ -191,6 +202,8 @@ class Backtester:
             max_depth_fraction=float(np.max(fracs)) if fracs else 0.0,
             no_fill_reasons=dict(self._executor.no_fill_reasons),
             net_exposure_notional_hours=exposure_nh,
-            account=eng._perf.metrics(ACCOUNT), per_strategy=per_strategy, gates=gates,
+            account=account, per_strategy=per_strategy, gates=gates,
             traded=self._executor.fills > 0, aborted=aborted,
+            warmup_incomplete=not self._warmed,
+            no_fill_rate=(self._executor.no_fills / attempts) if attempts else 0.0,
         )

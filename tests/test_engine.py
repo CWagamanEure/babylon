@@ -142,6 +142,20 @@ def test_multi_strategy_attribution_in_sync_and_deterministic():
     assert ledger.position(s1.name, "BTC") == led2.position(s1.name, "BTC")
 
 
+def test_child_rng_is_roster_invariant():
+    from babylon.engine.engine import _child_rng
+
+    # A (strategy, coin) edge RNG depends only on (base, name, coin) — so adding or
+    # removing other strategies never shifts its draws (order- AND insert-invariant).
+    base = 999
+    a = _child_rng(base, "mom_SOL_20", "SOL").random(5)
+    b = _child_rng(base, "mom_SOL_20", "SOL").random(5)
+    assert np.array_equal(a, b)
+    # distinct (name, coin) → independent streams
+    assert not np.array_equal(a, _child_rng(base, "mom_BTC_20", "BTC").random(5))
+    assert not np.array_equal(a, _child_rng(base, "mom_SOL_20", "ETH").random(5))
+
+
 def test_budgets_must_sum_to_one():
     import pytest
 

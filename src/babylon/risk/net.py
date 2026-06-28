@@ -48,6 +48,13 @@ class NetRiskManager:
         """Re-arm the latch on recovery (replaying a journaled HALT event)."""
         self._halted = True
 
+    def rebaseline(self) -> None:
+        """Reset the drawdown high-water (next review re-establishes it from current
+        equity), WITHOUT clearing the halt latch. Used at the backtest warmup boundary
+        so account drawdown is measured from the post-warmup start — consistent with
+        the measurement layer's reset, which otherwise tracks a peak it discarded."""
+        self._high_water = None
+
     def to_state(self) -> dict[str, object]:
         hw = self._high_water
         return {"high_water": str(hw) if hw is not None else None, "halted": self._halted}

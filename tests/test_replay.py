@@ -83,6 +83,18 @@ def test_replay_skips_malformed_archive_books(tmp_path):
     assert len(evs) == 1 and r.skipped == 1  # the list-crossed book is dropped
 
 
+def test_dedup_keeps_distinct_vernum_collision(tmp_path):
+    s = ParquetStore(tmp_path)
+    s.write("l2Book", "BTC", _rec(BASE + 1000, 100.0, 101.0, ver=5))
+    s.write("l2Book", "BTC", _rec(BASE + 1000, 100.0, 101.0, ver=5))  # true dup → collapse
+    s.write("l2Book", "BTC", _rec(BASE + 1000, 200.0, 201.0, ver=5))  # ver collision, distinct
+    s.flush()
+    r = L2Replay(tmp_path, ["BTC"], "20260601", "20260601")
+    evs = list(r.events())
+    assert len(evs) == 2 and r.deduped == 1  # identical collapsed, distinct kept (not silent)
+    assert sorted(e.book.best_bid for e in evs) == [100.0, 200.0]
+
+
 def test_replay_missing_days_graceful(tmp_path):
     _store(tmp_path)
     # Range spanning empty days on both sides — no crash, same 3 events.

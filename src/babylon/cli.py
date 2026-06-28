@@ -266,6 +266,10 @@ def _render_backtest(r: BacktestResult) -> None:
     if r.aborted:
         console.print("[red]⚠ RUN ABORTED on a ledger≠executor invariant break — "
                       "results below are INCOMPLETE and not trustworthy.[/red]")
+    if r.warmup_incomplete:
+        console.print(f"[yellow]⚠ warmup ({r.warmup}) ≥ total ticks ({r.n_ticks}) — no "
+                      "measured window; widen the date range or lower --warmup.[/yellow]")
+        return
     if not r.traded:
         console.print(
             "[yellow]No trades executed[/yellow] — the strategy sized to zero the whole "
@@ -300,6 +304,10 @@ def _render_backtest(r: BacktestResult) -> None:
     if r.max_depth_fraction > 0.5:
         console.print("[yellow]⚠ some fills consumed >50% of visible depth — frozen-book "
                       "VWAP is fiction at that size; treat sizing as unrealistic.[/yellow]")
+    if r.no_fill_rate > 0.5:
+        console.print(f"[yellow]⚠ {r.no_fill_rate:.0%} of order attempts could not fill "
+                      "(target chronically exceeds book depth) — the strategy can't hold "
+                      "its intended size; results understate intended exposure.[/yellow]")
     console.print("[yellow]Honest scope:[/yellow] " + " ".join(f"• {h}" for h in r.honesty))
 
 
