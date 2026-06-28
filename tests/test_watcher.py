@@ -108,6 +108,50 @@ def test_consensus_sign_edge_weighted():
     assert abs(w.consensus_sign("BTC", weights) - (0.5 - 0.3 + 0.2)) < 1e-12
 
 
+def test_boundary_union_no_stale_regression():
+    # A: a same-ms fill surfacing after a poll cut must not drop the prior boundary
+    # tids (else the next poll re-applies the stale opens and the net regresses).
+    src = FakeSource([_fill(1000, "BTC", "B", 1.0, 0.0, 1), _fill(1000, "ETH", "B", 1.0, 0.0, 2)])
+    w = WalletWatcher(src, [W], min_interval_s=0.0)
+    _run(w.poll_wallet(W, 5000))
+    src.fills.append(_fill(1000, "BTC", "B", 4.0, 1.0, 3))  # new same-ms BTC scale → net 5
+    assert _run(w.poll_wallet(W, 6000)) == 1 and w.position(W, "BTC") == 5.0
+    # third poll re-serves all three @1000; all deduped → no regression to 1.0
+    assert _run(w.poll_wallet(W, 7000)) == 0 and w.position(W, "BTC") == 5.0
+
+
+def test_same_ms_tiebreak_by_tid():
+    # B: same-ms fills returned out of execution order → the higher-tid (later) anchor wins
+    src = FakeSource([
+        _fill(1000, "BTC", "B", 10.0, 110.0, 2),  # executed 2nd (tid 2): net 120
+        _fill(1000, "BTC", "B", 10.0, 100.0, 1),  # executed 1st (tid 1), returned LAST
+    ])
+    w = WalletWatcher(src, [W], min_interval_s=0.0)
+    _run(w.poll_wallet(W, 5000))
+    assert w.position(W, "BTC") == 120.0  # not 110 (list-order would pick the last)
+
+
+def test_relative_flat_tolerance_no_signflip():
+    # C: float dust on a huge position is flat, not a sign-flipped full-strength vote
+    src = FakeSource([_fill(1000, "PEPE", "A", 999_999_999.5, 1_000_000_000.0, 1)])  # net 0.5
+    w = WalletWatcher(src, [W], min_interval_s=0.0)
+    _run(w.poll_wallet(W, 5000))
+    assert w.position(W, "PEPE") == 0.0 and w.consensus_sign("PEPE", {W: 1.0}) == 0.0
+
+
+def test_truth_up_staleness_gate():
+    # #2: a snapshot OLDER than our last applied fill must not clobber it into a phantom
+    src = FakeSource([_fill(1000, "BTC", "B", 10.0, 0.0, 1)])
+    w = WalletWatcher(src, [W], min_interval_s=0.0)
+    _run(w.poll_wallet(W, 5000))  # BTC=10, cursor=1000
+    src.chs = {"time": 500, "assetPositions": []}  # stale snapshot (before the fill)
+    _run(w.truth_up(W))
+    assert w.position(W, "BTC") == 10.0  # not clobbered
+    src.chs = {"time": 2000, "assetPositions": []}  # fresh snapshot says flat
+    _run(w.truth_up(W))
+    assert w.position(W, "BTC") == 0.0  # now legitimately flattened
+
+
 def test_state_roundtrip():
     src = FakeSource([_fill(1000, "BTC", "B", 5.0, 0.0, 1)])
     w = WalletWatcher(src, [W], min_interval_s=0.0)

@@ -19,6 +19,7 @@ engine can checkpoint the watcher at its snapshot cut and restore both consisten
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Protocol
 
 from babylon.data.wallet_fills import _Throttle
@@ -27,6 +28,7 @@ from babylon.logging import get_logger
 log = get_logger("watcher")
 
 _FLAT_EPS = 1e-12
+_REL_TOL = 1e-9  # flat when |net| < _REL_TOL·|startPosition| (meme-coin / float-ULP safe)
 _PAGE = 2000
 
 
@@ -50,6 +52,9 @@ class WalletWatcher:
         self._cursor: dict[str, int] = {w: 0 for w in wallets}
         self._boundary_tids: dict[str, set[int]] = {w: set() for w in wallets}
         self._last_detect: dict[str, int] = {}  # poll-return time per wallet (latency)
+        # Per-wallet lock so a poll and a truth-up can't interleave at their awaits
+        # and corrupt _pos (the "same loop ⇒ atomic" assumption is false across awaits).
+        self._lock: dict[str, asyncio.Lock] = {w: asyncio.Lock() for w in wallets}
 
     # --- reads -------------------------------------------------------------
 
@@ -76,65 +81,84 @@ class WalletWatcher:
     async def poll_wallet(self, wallet: str, now_ms: int) -> int:
         """Fetch fills since the cursor (paginating a burst), update positions from
         the latest fill per coin. Returns the count of fresh fills applied."""
-        cursor = self._cursor[wallet]
-        boundary = self._boundary_tids[wallet]
-        since = cursor
-        fresh: list[dict[str, Any]] = []
-        seen: set[int] = set()
-        while True:
-            await self._throttle.wait()
-            batch = await self._src.user_fills_by_time(wallet, since, now_ms)
-            new = [f for f in batch
-                   if int(f["tid"]) not in seen
-                   and not (int(f["time"]) == cursor and int(f["tid"]) in boundary)]
-            if not new:
-                break
-            for f in new:
-                seen.add(int(f["tid"]))
-            fresh.extend(new)
-            if len(batch) < _PAGE:
-                break
-            nxt = max(int(f["time"]) for f in batch)
-            since = nxt + 1 if nxt <= since else nxt  # progress; tid-dedup covers overlap
-        self._last_detect[wallet] = now_ms
-        if not fresh:
-            return 0
-        self._apply(wallet, fresh)
-        return len(fresh)
+        async with self._lock[wallet]:  # serialize vs truth_up (no interleave at awaits)
+            cursor = self._cursor[wallet]
+            boundary = self._boundary_tids[wallet]
+            since = cursor
+            fresh: list[dict[str, Any]] = []
+            seen: set[int] = set()
+            while True:
+                await self._throttle.wait()
+                batch = await self._src.user_fills_by_time(wallet, since, now_ms)
+                new = [f for f in batch
+                       if int(f["tid"]) not in seen
+                       and not (int(f["time"]) == cursor and int(f["tid"]) in boundary)]
+                if not new:
+                    break
+                for f in new:
+                    seen.add(int(f["tid"]))
+                fresh.extend(new)
+                if len(batch) < _PAGE:
+                    break
+                nxt = max(int(f["time"]) for f in batch)
+                if min(int(f["time"]) for f in batch) == nxt:
+                    since = nxt + 1  # a FULL page at one ms can't paginate within it →
+                    # force progress (a >2000-same-ms event is unrepresentable; truth-up reconciles)
+                else:
+                    since = nxt if nxt > since else nxt + 1  # overlap to catch a straddling group
+            self._last_detect[wallet] = now_ms
+            if not fresh:
+                return 0
+            self._apply(wallet, fresh)
+            return len(fresh)
 
     def _apply(self, wallet: str, fills: list[dict[str, Any]]) -> None:
-        # startPosition-anchored: the latest fill per coin gives the absolute net.
+        # startPosition-anchored: the (time, tid)-latest fill per coin is the absolute
+        # net — tie-break on tid because same-ms fill order is undefined by the API.
         latest: dict[str, dict[str, Any]] = {}
         for f in fills:
             c = str(f["coin"])
-            if c not in latest or int(f["time"]) >= int(latest[c]["time"]):
+            key = (int(f["time"]), int(f["tid"]))
+            if c not in latest or key >= (int(latest[c]["time"]), int(latest[c]["tid"])):
                 latest[c] = f
         book = self._pos[wallet]
         for c, f in latest.items():
+            sp = float(f["startPosition"])
             signed = float(f["sz"]) if str(f["side"]) == "B" else -float(f["sz"])
-            net = float(f["startPosition"]) + signed
-            if abs(net) < _FLAT_EPS:
+            net = sp + signed
+            tol = max(_FLAT_EPS, _REL_TOL * abs(sp))  # relative — float residue ≠ a position
+            if abs(net) < tol:
                 book.pop(c, None)
             else:
                 book[c] = net
-        all_times = [int(f["time"]) for f in fills]
-        top = max(all_times)
+        top = max(int(f["time"]) for f in fills)
+        top_tids = {int(f["tid"]) for f in fills if int(f["time"]) == top}
+        # Union the prior boundary when the top ms is unchanged — else previously-seen
+        # tids at that ms drop out and get re-applied (a stale regression) next poll.
+        self._boundary_tids[wallet] = (
+            self._boundary_tids[wallet] | top_tids if top == self._cursor[wallet] else top_tids)
         self._cursor[wallet] = top
-        self._boundary_tids[wallet] = {int(f["tid"]) for f in fills if int(f["time"]) == top}
 
     async def truth_up(self, wallet: str) -> None:
         """Overwrite from the exchange's authoritative positions — force-flat any coin
         the wallet no longer holds (kills the missed-close phantom). Also the cold-start
-        seed."""
-        await self._throttle.wait()
-        st = await self._src.clearinghouse_state(wallet)
-        truth: dict[str, float] = {}
-        for ap in st.get("assetPositions", []):
-            p = ap.get("position", {})
-            szi = float(p.get("szi", 0.0))
-            if abs(szi) >= _FLAT_EPS:
-                truth[str(p["coin"])] = szi
-        self._pos[wallet] = truth
+        seed. Skips the overwrite if the snapshot is OLDER than our last applied fill
+        (a stale snapshot would clobber a fresh fill into a sticky phantom flat)."""
+        async with self._lock[wallet]:
+            await self._throttle.wait()
+            st = await self._src.clearinghouse_state(wallet)
+            snap_time = int(st.get("time", 0))
+            truth: dict[str, float] = {}
+            for ap in st.get("assetPositions", []):
+                p = ap.get("position", {})
+                coin = p.get("coin")
+                if coin is None:
+                    continue
+                szi = float(p.get("szi", 0.0))
+                if abs(szi) >= _FLAT_EPS:
+                    truth[str(coin)] = szi
+            if snap_time == 0 or snap_time >= self._cursor.get(wallet, 0):
+                self._pos[wallet] = truth  # snapshot is at least as new as our fills
 
     async def truth_up_all(self) -> None:
         for w in self._wallets:
