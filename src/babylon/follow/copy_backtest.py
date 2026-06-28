@@ -69,8 +69,12 @@ def _price_grid(candles_dir: Path, coin: str, hours: np.ndarray) -> np.ndarray |
 def copy_backtest(
     edges: dict[str, float], fills_dir: Path, candles_dir: Path,
     start_ms: int, end_ms: int, *,
-    kelly_fraction: float = 0.5, cost_bps: float = 20.0, equity0: float = 100_000.0,
+    kelly_fraction: float = 0.5, cost_by_coin: dict[str, float] | None = None,
+    default_cost_bps: float = 15.0, equity0: float = 100_000.0,
 ) -> CopyResult:
+    """``cost_by_coin`` maps coin → per-side cost in bps (half-spread + taker fee);
+    coins absent from it fall back to ``default_cost_bps``."""
+    cost_by_coin = cost_by_coin or {}
     hours = np.arange(start_ms, end_ms, _HOUR_MS)
     h = hours.size
     # Edge weights: clip to ≥0 (don't follow a wallet's negative edge), normalise.
@@ -112,9 +116,12 @@ def copy_backtest(
     ret = np.zeros_like(px)
     ret[:-1] = np.where(px[:-1] > 0, px[1:] / px[:-1] - 1.0, 0.0)
     ret = np.nan_to_num(ret)
-    turnover = np.abs(np.diff(weight, axis=0, prepend=weight[:1])).sum(axis=1)
+    # Per-coin per-side cost (bps) → cost is charged on each coin's own turnover.
+    cvec = np.array([cost_by_coin.get(c, default_cost_bps) for c in coins])
+    dweight = np.abs(np.diff(weight, axis=0, prepend=weight[:1]))
+    turnover = dweight.sum(axis=1)
     gross_ret = (weight * ret).sum(axis=1)
-    cost = cost_bps * 1e-4 * turnover
+    cost = 1e-4 * (dweight * cvec[None, :]).sum(axis=1)
     port_ret = gross_ret - cost
     equity = equity0 * np.cumprod(1.0 + port_ret)
 
@@ -132,7 +139,8 @@ def copy_backtest(
 def run_walkforward(
     fills_dir: Path, candles_dir: Path,
     train: tuple[int, int], follow: tuple[int, int], *,
-    min_positions: int = 20, **kw: float,
+    min_positions: int = 20, kelly_fraction: float = 0.5,
+    cost_by_coin: dict[str, float] | None = None, default_cost_bps: float = 15.0,
 ) -> tuple[CopyResult, int]:
     """Full pipeline: rank skill on the TRAIN window, follow the train-top-quintile
     on the FOLLOW window. Returns (result, n_pool) where n_pool is the ranked pool
@@ -141,7 +149,11 @@ def run_walkforward(
     rank = rank_wallets(fills_dir, *train, min_positions=min_positions)
     top = rank.filter(pl.col("top_quintile"))
     edges = {r["wallet"]: float(r["median_bps"]) for r in top.to_dicts()}
-    result = copy_backtest(edges, fills_dir, candles_dir, follow[0], follow[1], **kw)
+    result = copy_backtest(
+        edges, fills_dir, candles_dir, follow[0], follow[1],
+        kelly_fraction=kelly_fraction, cost_by_coin=cost_by_coin,
+        default_cost_bps=default_cost_bps,
+    )
     return result, rank.height
 
 
