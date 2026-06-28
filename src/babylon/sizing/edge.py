@@ -111,3 +111,34 @@ class BootstrapEdgeModel:
     def from_state(self, st: dict[str, Any]) -> None:
         self._prior_strength = int(st["prior_strength"])
         self._observed = deque(st["observed"], maxlen=st["maxlen"])
+
+
+class FrozenEdge:
+    """A FROZEN edge — a fixed prior distribution that NEVER updates from forward
+    returns. For the live-follow OOS validator: sizing is frozen at T0 so the forward
+    measurement can't be contaminated by online adaptation (docs/LIVE_FOLLOW.md §9b).
+    Satisfies the EdgeModel Protocol; ``update`` is a deliberate no-op."""
+
+    def __init__(self, draws: list[float], n_effective: int) -> None:
+        self._draws = np.asarray(draws or [0.0], dtype=np.float64)
+        self._n = int(n_effective)
+
+    @classmethod
+    def from_gaussian(
+        cls, rng: np.random.Generator, *, mean: float, std: float,
+        strength: int = 20, draws: int = 400,
+    ) -> FrozenEdge:
+        return cls(list(rng.normal(mean, std, size=draws)), strength)
+
+    def estimate(self) -> EdgeEstimate:
+        return EdgeEstimate(draws=self._draws, n_effective=self._n)
+
+    def update(self, unit_return: float) -> None:
+        return None  # frozen — forward returns never reshape sizing
+
+    def to_state(self) -> dict[str, Any]:
+        return {"draws": self._draws.tolist(), "n": self._n}
+
+    def from_state(self, st: dict[str, Any]) -> None:
+        self._draws = np.asarray(st["draws"], dtype=np.float64)
+        self._n = int(st["n"])
