@@ -17,14 +17,18 @@ from decimal import Decimal
 
 from babylon.core import Fill, Order
 from babylon.execution.base import Quote
-from babylon.execution.fill_model import Book, fill
+from babylon.execution.fill_model import TAKER_FEE, Book, fill
 
 
 class BacktestExecutor:
-    def __init__(self, *, slippage_bps: float = 0.0, max_depth_fraction: float = 0.25) -> None:
+    def __init__(
+        self, *, slippage_bps: float = 0.0, max_depth_fraction: float = 0.25,
+        taker_fee_bps: float = TAKER_FEE * 1e4,
+    ) -> None:
         self._net: dict[str, Decimal] = defaultdict(lambda: Decimal(0))
         self._book: dict[str, Book] = {}
         self._slippage_bps = slippage_bps
+        self._fee_bps = taker_fee_bps
         self._max_depth_fraction = max_depth_fraction
         # Execution diagnostics for the report.
         self.fills = 0
@@ -53,8 +57,8 @@ class BacktestExecutor:
             self.no_fill_reasons["no book"] += 1
             return None
         f, report = fill(
-            order, book, now=now,
-            slippage_bps=self._slippage_bps, max_depth_fraction=self._max_depth_fraction,
+            order, book, now=now, slippage_bps=self._slippage_bps,
+            fee_bps=self._fee_bps, max_depth_fraction=self._max_depth_fraction,
         )
         if f is None:
             self.no_fills += 1

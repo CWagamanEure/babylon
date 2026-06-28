@@ -71,6 +71,27 @@ def test_backtest_is_deterministic(tmp_path):
     assert a.fills == b.fills and a.n_ticks == b.n_ticks
 
 
+def test_multi_strategy_on_one_coin_does_not_abort(tmp_path):
+    # Several strategies netting on ONE coin used to trip ledger≠executor via
+    # Decimal re-summation drift (~60% of runs). Lot-quantized shares fix it.
+    _write_trend(ParquetStore(tmp_path))
+    strats = [Momentum("BTC", lookback=lb) for lb in (5, 8, 13, 21)]
+    ex = BacktestExecutor(slippage_bps=1.0, max_depth_fraction=0.5)
+    eng = Engine(
+        feed=NullFeed(), market=MarketView(), strategies=strats, sizer=Sizer(),
+        risk=RiskManager(), net_risk=NetRiskManager(),
+        reconciler=Reconciler(min_trade_notional=Decimal(10)), executor=ex,
+        ledger=Ledger(Decimal(100_000)), clock=SimClock(),
+        budgets={s.name: 0.25 for s in strats}, rng=np.random.default_rng(0), interval_s=0.0,
+    )
+    cfg = BacktestConfig(start="20260601", end="20260601", interval_ms=2000, warmup=20)
+    res = Backtester(eng, ex, L2Replay(tmp_path, ["BTC"], "20260601", "20260601"),
+                     eng._clock, cfg).run()
+    assert not res.aborted
+    for c in eng._coins:  # ledger re-sum stays bit-equal to the executor net
+        assert eng._ledger.net_position(c) == eng._executor.net_position(c)
+
+
 def test_no_trade_run_reports_gracefully(tmp_path):
     # Flat price → momentum sizes to zero → no fills. Must not crash, and must flag
     # traded=False (so the report says "no trades" instead of an empty table).

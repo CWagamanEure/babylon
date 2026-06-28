@@ -25,6 +25,7 @@ from decimal import Decimal
 from babylon.core import Fill, Order
 
 FILL_MODEL_VERSION = 1
+TAKER_FEE = 0.00045  # 4.5 bps/side — the single source of truth (engine imports this)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,9 +66,13 @@ def fill(
     *,
     now: int,
     slippage_bps: float = 0.0,
+    fee_bps: float = 0.0,
     max_depth_fraction: float = 0.25,
 ) -> tuple[Fill | None, FillReport]:
-    """Attempt a taker fill. Returns (Fill or None, diagnostics)."""
+    """Attempt a taker fill. Returns (Fill or None, diagnostics). ``fee_bps`` (the
+    taker fee) is folded into the fill price so the EQUITY curve actually pays it —
+    otherwise the headline log-growth is fee-blind (the fee would only ever hit the
+    separate edge series)."""
     if order.size == 0:
         return None, FillReport(False, 0.0, "zero size")
     is_buy = order.is_buy
@@ -98,7 +103,8 @@ def fill(
         return None, FillReport(False, frac, "insufficient depth")
 
     vwap = cost / got
-    adj = vwap * (1.0 + slippage_bps / 1e4) if is_buy else vwap * (1.0 - slippage_bps / 1e4)
+    worsen = (slippage_bps + fee_bps) / 1e4  # taker pays both, against the fill
+    adj = vwap * (1.0 + worsen) if is_buy else vwap * (1.0 - worsen)
     f = Fill(coin=order.coin, size=order.size, price=Decimal(str(adj)), time=now,
              cloid=order.cloid)
     return f, FillReport(True, frac)

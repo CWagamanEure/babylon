@@ -42,7 +42,11 @@ HONESTY_FLAGS = (
     "Edge series is mid-based + half-spread on turnover; not a maker/passive model.",
     "No liquidation/margin model — ruinous paths are not terminated.",
     "A backtest SEEDS A WEAK PRIOR / SANITY-CHECKS; it is NOT validation.",
-    "Fast iteration risks overfitting — treat one run as one of many trials.",
+    "Fast iteration risks overfitting — treat one run as one of many trials; the "
+    "gate applies NO multiple-testing correction across a sweep.",
+    "The 'edge real?' gate is ADVISORY: trust it only when n is well above ~30, and "
+    "it understates risk on strongly autocorrelated returns (a pass can still be a "
+    "false positive). A no-trade run reports nothing, not a verdict.",
 )
 
 
@@ -101,9 +105,13 @@ class Backtester:
 
         for ev in self._replay.events():
             t = ev.time
-            # Gap → suppress the empty catch-up grid (don't tick a frozen book).
+            # Gap → suppress the empty catch-up grid (don't tick a frozen book), AND
+            # invalidate the engine's per-coin price baseline so the first post-gap
+            # tick doesn't book the whole gap's move as one period return (a giant
+            # outlier into the EdgeModel + equity curve).
             if last_event_t is not None and t - last_event_t > cfg.max_gap_ms:
                 next_tick = t + cfg.interval_ms
+                eng._prev_mid.clear()
                 gaps += 1
             if next_tick is None:
                 next_tick = t + cfg.interval_ms
@@ -134,11 +142,15 @@ class Backtester:
     def _tick(self, now: int, last_update: dict[str, int], n_ticks: int) -> float:
         eng = self._engine
         cfg = self._cfg
-        # Staleness guard: evict coins with no fresh book (look absent, don't trade stale).
+        # Staleness guard: evict coins with no fresh book (look absent, don't trade
+        # stale). Also drop the price baseline so a returning coin doesn't book the
+        # whole stale window as one period. A HELD position is still marked to its
+        # last-known price (engine._last_mark), so its PnL doesn't flicker out.
         for coin in list(eng._coins):
             seen = last_update.get(coin)
             if seen is None or now - seen > cfg.max_staleness_ms:
                 eng._market.evict(coin)
+                eng._prev_mid.pop(coin, None)
         self._clock.advance_to(now)
         eng._tick()
         if eng._kill is not None and eng._tick_id % eng._snapshot_every == 0:

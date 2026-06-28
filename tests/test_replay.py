@@ -54,6 +54,35 @@ def test_replay_deterministic(tmp_path):
     assert run() == run()
 
 
+def test_clean_book_validates_list_columns():
+    from babylon.data.replay import _clean_book
+
+    assert _clean_book([100.0, 99.0], [2.0, 4.0], [101.0], [3.0]) is not None
+    # NaN level dropped, valid level remains
+    b = _clean_book([float("nan"), 99.0], [2.0, 4.0], [101.0], [3.0])
+    assert b is not None and b.bid_px == (99.0,)
+    # px/sz length mismatch → truncated to equal length (depth-cap bypass fix)
+    b = _clean_book([100.0, 99.0, 98.0], [2.0, 4.0], [101.0], [3.0])
+    assert b is not None and len(b.bid_px) == len(b.bid_sz) == 2
+    # negative size → side empties → None; crossed top-of-book → None; one-sided → None
+    assert _clean_book([100.0], [-5.0], [101.0], [3.0]) is None
+    assert _clean_book([101.0], [2.0], [100.0], [3.0]) is None
+    assert _clean_book([100.0], [2.0], [], []) is None
+
+
+def test_replay_skips_malformed_archive_books(tmp_path):
+    s = ParquetStore(tmp_path)
+    s.write("l2Book", "BTC", _rec(BASE + 1000, 100.0, 101.0, ver=1))  # valid
+    # list-crossed but scalar-uncrossed: scalars say 100/101, lists say bid 200 > ask 100
+    s.write("l2Book", "BTC", dict(
+        time=BASE + 2000, ver_num=2, best_bid=100.0, best_ask=101.0, mid=100.5,
+        bid_px=[200.0], bid_sz=[2.0], bid_n=[1], ask_px=[100.0], ask_sz=[2.0], ask_n=[1]))
+    s.flush()
+    r = L2Replay(tmp_path, ["BTC"], "20260601", "20260601")
+    evs = list(r.events())
+    assert len(evs) == 1 and r.skipped == 1  # the list-crossed book is dropped
+
+
 def test_replay_missing_days_graceful(tmp_path):
     _store(tmp_path)
     # Range spanning empty days on both sides — no crash, same 3 events.

@@ -51,7 +51,11 @@ def log_growth_gate(
     n = r.size
     if n < min_n:
         return GateResult(is_real=False, log_growth_lower=0.0, log_growth_median=0.0, n=n)
-    blk = block or max(1, min(n, int(round(n ** (1 / 3)))))
+    # Block ~ sqrt(n), not n^(1/3): the smaller exponent left blocks far below the
+    # serial-correlation length, so the band understated uncertainty and the
+    # false-positive rate climbed badly on autocorrelated (crypto-like) series.
+    # Even sqrt(n) is only a partial fix — the verdict stays ADVISORY, not a guarantee.
+    blk = block or max(2, min(n // 2, int(round(n ** 0.5))))
     stats = np.empty(n_boot, dtype=np.float64)
     for i in range(n_boot):
         g = 1.0 + _block_bootstrap(r, blk, rng)

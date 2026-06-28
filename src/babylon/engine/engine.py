@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Sequence
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
 import numpy as np
@@ -36,6 +36,7 @@ from babylon.engine.context import Context, MarketView
 from babylon.exchange.feed import Feed
 from babylon.exchange.websocket import Subscription
 from babylon.execution.base import Executor
+from babylon.execution.fill_model import TAKER_FEE  # taker fee, single source of truth
 from babylon.logging import get_logger
 from babylon.portfolio.ledger import Ledger
 from babylon.portfolio.reconcile import Reconciler
@@ -51,8 +52,6 @@ from babylon.strategy.base import Strategy
 
 log = get_logger("engine")
 
-# Approx Hyperliquid taker fee per side; round-trip charged to the edge on turnover.
-TAKER_FEE = 0.00045
 QUARANTINE_AFTER = 3  # consecutive strategy failures before it's benched
 
 
@@ -112,6 +111,7 @@ class Engine:
         self._exposure: BookExposure | None = None
         self._perf = PerformanceMonitor()
         self._last_perf_sample: dict[str, float] = {}
+        self._last_mark: dict[str, Decimal] = {}  # last-known price per coin, for MTM
         self._kill = kill_switch
         self._trackers: dict[str, EdgeTracker] = {s.name: EdgeTracker() for s in strategies}
         self._stop = asyncio.Event()
@@ -376,9 +376,17 @@ class Engine:
         marks = self._market.marks(self._coins)
         if not marks:
             return
+        # Trading uses only FRESH marks. For mark-to-market (equity/measurement),
+        # carry the last-known price of any coin without a fresh quote so a held
+        # position's PnL doesn't vanish from the curve while its feed is quiet/stale.
+        self._last_mark.update(marks)
+        mtm = dict(marks)
+        for coin in self._coins:
+            if coin not in mtm and coin in self._last_mark:
+                mtm[coin] = self._last_mark[coin]
 
         self._update_edges(marks)
-        equity = self._ledger.equity(marks)
+        equity = self._ledger.equity(mtm)
 
         # Phase 3: per-strategy directions → sizing → per-asset risk → raw targets.
         # Each strategy is isolated; a thrower holds its position and is benched.
@@ -497,12 +505,12 @@ class Engine:
 
         # Measure the actual book we now hold (tracks; does not enforce).
         self._exposure = self._exposure_mon.assess(
-            self._executor.net_positions(), marks, equity
+            self._executor.net_positions(), mtm, equity
         )
         # Sample per-strategy + account equity for the measurement layer — but only
         # when something actually changed (a stale tick with no new mark/fill would
         # inject a spurious 0-return period, diluting log-growth).
-        eqs = self._strategy_equities(marks, equity)
+        eqs = self._strategy_equities(mtm, equity)
         if eqs != self._last_perf_sample:
             self._perf.sample(eqs)
             self._last_perf_sample = eqs
@@ -570,13 +578,18 @@ class Engine:
         single source of attribution, so the journal can persist the exact vector
         and recovery reproduces identical booking.
 
-        Shares are pro-rata by each strategy's scaled requested delta; the last
-        (largest |delta|, name tiebreak — deterministic, NOT dict order) takes the
-        exact residual so the vector sums to fill.size precisely (keeps ledger net
-        == executor net). Pure pro-rata is correct for FULL fills (paper); partial
-        fills need the same-sign-fills-first rule — a [LIVE] TODO.
+        Shares are pro-rata by each strategy's scaled requested delta, each QUANTIZED
+        to the lot grid; the last (largest |delta|, name tiebreak — deterministic, NOT
+        dict order) takes the exact residual. Quantizing every share keeps each
+        strategy's position an exact lot multiple, so the ledger's per-strategy
+        re-summation (Ledger.net_position) is lossless and stays bit-equal to the
+        executor's running net — otherwise 28-digit pro-rata Decimals re-summed by
+        strategy drift apart and trip the invariant on multi-strategy-on-one-coin.
+        Pure pro-rata is correct for FULL fills (paper); partial fills need the
+        same-sign-fills-first rule — a [LIVE] TODO.
         """
         coin = fill.coin
+        lot = self._reconciler.lot
         deltas = [
             (s, scaled[(s, c)] - self._ledger.position(s, coin))
             for (s, c) in scaled
@@ -591,8 +604,10 @@ class Engine:
         shares: list[tuple[str, Decimal]] = []
         allocated = Decimal(0)
         for i, (strat, d) in enumerate(movers):
-            share = fill.size - allocated if i == len(movers) - 1 else fill.size * d / total
-            if i != len(movers) - 1:
+            if i == len(movers) - 1:
+                share = fill.size - allocated  # exact residual (also lot-aligned)
+            else:
+                share = (fill.size * d / total).quantize(lot, rounding=ROUND_HALF_EVEN)
                 allocated += share
             shares.append((strat, share))
         return shares

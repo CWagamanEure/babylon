@@ -37,6 +37,10 @@ class Reconciler:
         self._run_id = run_id  # cloid prefix; makes cloids unique across runs/processes
         self._counter = 0
 
+    @property
+    def lot(self) -> Decimal:
+        return self._lot
+
     def diff(
         self,
         *,
