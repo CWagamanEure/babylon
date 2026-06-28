@@ -188,8 +188,9 @@ def build_basket(candles_dir: Path, coins: list[str]) -> tuple[np.ndarray, np.nd
 
 def _basket_ret_bps(basket: tuple[np.ndarray, np.ndarray], t0: int, t1: int) -> float:
     times, index = basket
-    i0 = int(np.searchsorted(times, t0, side="right")) - 1
-    i1 = int(np.searchsorted(times, t1, side="right")) - 1
+    # last FULLY-CLOSED hourly point at each end (no look-ahead — matches _close_at).
+    i0 = int(np.searchsorted(times, t0 - 3_600_000, side="right")) - 1
+    i1 = int(np.searchsorted(times, t1 - 3_600_000, side="right")) - 1
     if i0 < 0 or i1 < 0 or i0 >= index.size or i1 >= index.size or index[i0] <= 0:
         return 0.0
     return float(index[i1] / index[i0] - 1.0) * 1e4

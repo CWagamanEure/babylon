@@ -34,10 +34,16 @@ def load_price_lookups(candles_dir: Path) -> dict[str, tuple[np.ndarray, np.ndar
     return out
 
 
+_CANDLE_MS = 3_600_000  # hourly candles (HL's finest with full history)
+
+
 def _close_at(lookup: tuple[np.ndarray, np.ndarray], t: int) -> float | None:
-    """Close of the candle in effect at time ``t`` (most recent at-or-before)."""
+    """Close of the last candle FULLY CLOSED by time ``t`` — NO look-ahead. A follower
+    at ``t`` can only know prices through the most recently *completed* candle; the
+    candle *containing* ``t`` doesn't close until up to an interval later, so pricing
+    at its close (the old behaviour) read an end-of-hour price up to ~1h in the future."""
     times, closes = lookup
-    i = int(np.searchsorted(times, t, side="right")) - 1
+    i = int(np.searchsorted(times, t - _CANDLE_MS, side="right")) - 1
     if i < 0 or i >= closes.size:
         return None
     px = float(closes[i])
