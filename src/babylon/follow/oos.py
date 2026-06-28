@@ -91,6 +91,67 @@ def calibrate(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class RollStep:
+    train_start: int
+    follow_start: int
+    n: int
+    top: float       # top-quintile followable median on this follow step
+    bottom: float
+    long_short: float  # top − bottom (the regime-neutral cross-sectional spread)
+
+
+def rolling_calibrate(
+    fills_dir: Path, candles_dir: Path, universe: set[str],
+    start_ms: int, end_ms: int, *, train_ms: int, step_ms: int,
+    lag_ms: int = 300_000, min_hold_ms: int = 3_600_000, beta: float = 1.0,
+    min_positions: int = 6, liquid_spread_bps: float = 8.0,
+    spreads: dict[str, float] | None = None,
+) -> list[RollStep]:
+    """Walk-forward with ROLLING re-selection: each step, re-rank on the trailing
+    ``train_ms`` window and measure the (re-selected) top/bottom quintiles' FOLLOWABLE
+    edge on the next ``step_ms``. Tests both the rolling-informed-list idea and the
+    long-short (top−bottom) spread per regime — reusing the SAME measurement, no
+    pipeline reproduction. The basket/lookups are built once."""
+    sp = spreads or {}
+    liquid = [c for c in universe if sp.get(c, 0.0) < liquid_spread_bps] or list(universe)
+    basket = build_basket(candles_dir, liquid)
+    lookups = load_price_lookups(candles_dir)
+
+    def follow_med(wallets: list[str], window: tuple[int, int]) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for w in wallets:
+            df = pl.read_parquet(fills_dir / f"{w}.parquet").filter(
+                (pl.col("time") >= window[0]) & (pl.col("time") < window[1]))
+            if df.height == 0:
+                continue
+            sk = followable_skill(w, df, universe=universe, lookups=lookups, basket=basket,
+                                  lag_ms=lag_ms, min_hold_ms=min_hold_ms, beta=beta)
+            if sk.n_positions >= min_positions:
+                out[w] = sk.median_bps
+        return out
+
+    steps: list[RollStep] = []
+    t = start_ms
+    while t + train_ms + step_ms <= end_ms:
+        train, follow = (t, t + train_ms), (t + train_ms, t + train_ms + step_ms)
+        rank = rank_followable(
+            fills_dir, *train, universe=universe, lookups=lookups, basket=basket,
+            lag_ms=lag_ms, min_hold_ms=min_hold_ms, beta=beta, min_positions=min_positions)
+        if not rank.is_empty():
+            fb = follow_med(rank["wallet"].to_list(), follow)
+            j = rank.filter(pl.col("wallet").is_in(list(fb))).with_columns(
+                fbps=pl.col("wallet").replace_strict(fb, default=None)).sort("median_bps",
+                                                                             descending=True)
+            if j.height >= 10:
+                q = j.height // 5
+                top = float(np.median(j["fbps"].to_numpy()[:q]))
+                bot = float(np.median(j["fbps"].to_numpy()[-q:]))
+                steps.append(RollStep(t, follow[0], j.height, top, bot, top - bot))
+        t += step_ms
+    return steps
+
+
 def _rank(a: np.ndarray) -> np.ndarray:
     order = a.argsort()
     r = np.empty_like(order, dtype=np.float64)
