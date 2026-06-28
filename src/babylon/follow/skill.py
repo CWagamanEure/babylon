@@ -25,6 +25,9 @@ import polars as pl
 _REL_TOL = 1e-9  # flat when |net| < _REL_TOL · max|net| (relative — meme-coin safe)
 
 
+ZERO_HASH = "0x" + "0" * 64  # TWAP slice / liquidation marker (mechanical, not conviction)
+
+
 @dataclass(frozen=True, slots=True)
 class Position:
     direction: int  # +1 long / -1 short
@@ -33,12 +36,17 @@ class Position:
     entry_t: int
     exit_t: int
     taker_open: bool  # opening fill crossed the spread (conviction)
+    conviction_open: bool = True  # opening fill has a real hash (not TWAP/liquidation)
 
     @property
     def raw_bps(self) -> float:
         if self.entry_px <= 0:
             return 0.0
         return self.direction * (self.exit_px - self.entry_px) / self.entry_px * 1e4
+
+    @property
+    def hold_ms(self) -> int:
+        return self.exit_t - self.entry_t
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +61,7 @@ class WalletSkill:
 def reconstruct(
     times: np.ndarray, px: np.ndarray, sz: np.ndarray, side: np.ndarray,
     crossed: np.ndarray, startpos: np.ndarray | None = None,
+    hashes: np.ndarray | None = None,
 ) -> list[Position]:
     """Round-trip positions for one coin (signed-contract state machine).
 
@@ -66,16 +75,20 @@ def reconstruct(
     max_abs = float(np.abs(np.cumsum(signed)).max()) if signed.size else 0.0
     tol = max(_REL_TOL * max_abs, 1e-15)
     out: list[Position] = []
+    def _conv(i: int) -> bool:
+        return hashes is None or str(hashes[i]) != ZERO_HASH
+
     pos = float(startpos[0]) if startpos is not None and startpos.size else 0.0
     valid = abs(pos) < tol  # only emit positions whose open we actually observed
     en = es = xn = xs = 0.0  # entry/exit notional & size of the OPEN position
     et = 0
-    topen = False
+    topen = conv = False
     for i in range(times.size):
         d = float(signed[i])
         if pos == 0.0 or (d > 0) == (pos > 0):  # opening (from flat, or adding same side)
             if pos == 0.0:
-                et, topen, en, es, valid = int(times[i]), bool(crossed[i]), 0.0, 0.0, True
+                et, topen, conv, en, es, valid = (
+                    int(times[i]), bool(crossed[i]), _conv(i), 0.0, 0.0, True)
             en += abs(d) * float(px[i])
             es += abs(d)
             pos += d
@@ -87,36 +100,49 @@ def reconstruct(
             pos += close if pos < 0 else -close
             if abs(pos) < tol:  # position closed
                 if valid and es > 0 and xs > 0:
-                    out.append(Position(held_dir, en / es, xn / xs, et, int(times[i]), topen))
+                    out.append(
+                        Position(held_dir, en / es, xn / xs, et, int(times[i]), topen, conv))
                 en = es = xn = xs = 0.0
                 pos = 0.0  # exact flat — don't let a float residual stale the next open
                 leftover = abs(d) - close
                 if leftover > tol:  # flip → open the opposite side
-                    et, topen, valid = int(times[i]), bool(crossed[i]), True
+                    et, topen, conv, valid = (
+                        int(times[i]), bool(crossed[i]), _conv(i), True)
                     en, es = leftover * float(px[i]), leftover
                     pos = leftover if d > 0 else -leftover
     return out
 
 
+def _positions_for(coin_group: pl.DataFrame) -> list[Position]:
+    g = coin_group.sort("time")
+    return reconstruct(
+        g["time"].to_numpy(), g["px"].to_numpy(), g["sz"].to_numpy(),
+        g["side"].to_numpy(), g["crossed"].to_numpy(), g["startPosition"].to_numpy(),
+        g["hash"].to_numpy() if "hash" in g.columns else None,
+    )
+
+
 def wallet_skill(
     wallet: str, df: pl.DataFrame, *,
     universe: set[str], basket: tuple[np.ndarray, np.ndarray] | None,
-    taker_only: bool = True, beta: float = 1.0,
+    taker_only: bool = True, conviction_only: bool = True, min_hold_ms: int = 0,
+    beta: float = 1.0,
 ) -> WalletSkill:
-    """Median neutralized round-trip bps over taker-opened positions in the universe."""
+    """Median neutralized round-trip bps over taker-opened, non-TWAP positions in the
+    universe. ``min_hold_ms`` restricts to holds at least that long (the followable
+    subset)."""
     bps: list[float] = []
     coins = 0
     for (coin,), g in df.sort("time").group_by("coin", maintain_order=True):
         if str(coin) not in universe:
             continue  # majors / spot / junk excluded
-        g = g.sort("time")
-        positions = reconstruct(
-            g["time"].to_numpy(), g["px"].to_numpy(), g["sz"].to_numpy(),
-            g["side"].to_numpy(), g["crossed"].to_numpy(), g["startPosition"].to_numpy(),
-        )
         got = False
-        for p in positions:
+        for p in _positions_for(g):
             if taker_only and not p.taker_open:
+                continue
+            if conviction_only and not p.conviction_open:
+                continue  # TWAP slice / liquidation, not conviction
+            if p.hold_ms < min_hold_ms:
                 continue
             neut = p.raw_bps
             if basket is not None:
@@ -182,7 +208,8 @@ def _ffill(a: np.ndarray) -> np.ndarray:
 def rank_wallets(
     fills_dir: Path, start_ms: int, end_ms: int, *,
     universe: set[str], basket: tuple[np.ndarray, np.ndarray] | None = None,
-    taker_only: bool = True, beta: float = 1.0, min_positions: int = 20,
+    taker_only: bool = True, conviction_only: bool = True, min_hold_ms: int = 0,
+    beta: float = 1.0, min_positions: int = 20,
 ) -> pl.DataFrame:
     """Rank wallets by median neutralized bps over [start_ms, end_ms]."""
     rows = []
@@ -193,7 +220,8 @@ def rank_wallets(
         if df.height == 0:
             continue
         sk = wallet_skill(f.stem, df, universe=universe, basket=basket,
-                          taker_only=taker_only, beta=beta)
+                          taker_only=taker_only, conviction_only=conviction_only,
+                          min_hold_ms=min_hold_ms, beta=beta)
         if sk.n_positions >= min_positions:
             rows.append(sk)
     if not rows:
