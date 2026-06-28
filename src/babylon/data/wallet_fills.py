@@ -63,11 +63,13 @@ async def _fills_page(
 
 
 # Columns we keep (the rest of the payload is dropped); schema keeps Parquet stable.
+# `hash` (zero hash = TWAP slice / liquidation, not conviction) and `twapId` let the
+# skill measure exclude mechanical fills (~12% of the stream).
 _SCHEMA: dict[str, type[pl.DataType] | pl.DataType] = {
     "time": pl.Int64, "coin": pl.Utf8, "side": pl.Utf8, "px": pl.Float64,
     "sz": pl.Float64, "closedPnl": pl.Float64, "dir": pl.Utf8,
     "startPosition": pl.Float64, "fee": pl.Float64, "oid": pl.Int64,
-    "tid": pl.Int64, "crossed": pl.Boolean,
+    "tid": pl.Int64, "crossed": pl.Boolean, "hash": pl.Utf8, "twapId": pl.Int64,
 }
 
 
@@ -100,7 +102,8 @@ def _to_frame(fills: list[dict[str, Any]]) -> pl.DataFrame:
             "px": float(f["px"]), "sz": float(f["sz"]), "closedPnl": float(f["closedPnl"]),
             "dir": str(f["dir"]), "startPosition": float(f["startPosition"]),
             "fee": float(f["fee"]), "oid": int(f["oid"]), "tid": int(f["tid"]),
-            "crossed": bool(f["crossed"]),
+            "crossed": bool(f["crossed"]), "hash": str(f["hash"]),
+            "twapId": int(f["twapId"]) if f.get("twapId") is not None else None,
         }
         for f in fills
     ]
