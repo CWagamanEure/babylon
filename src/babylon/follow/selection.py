@@ -1,0 +1,66 @@
+"""Selection adapter — the real `returns_fn`/`cutoff_fn` for the RollScheduler.
+
+At each roll T0 it fetches a candidate wallet's TRAIN-window fills (via an injected
+provider — REST userFillsByTime live, or cached parquet) and turns them into the per-
+round-trip DIRECTIONAL followable returns (followable.py) + the wallet's last train-window
+tid (the seam-guard cutoff). This is the last real-data piece between the built system and
+a live run; the provider is injected so it stays testable without the network.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+import numpy as np
+import polars as pl
+
+from babylon.follow.experiment import ExperimentConfig
+from babylon.follow.followable import followable_returns
+
+_DAY_MS = 86_400_000
+# (wallet, start_ms, end_ms) -> the wallet's fills in [start, end); empty frame if none
+FillsProvider = Callable[[str, int, int], pl.DataFrame]
+
+
+class SelectionAdapter:
+    def __init__(
+        self, fills_provider: FillsProvider, *, universe: set[str],
+        lookups: dict[str, tuple[np.ndarray, np.ndarray]], config: ExperimentConfig,
+        basket: tuple[np.ndarray, np.ndarray] | None = None,
+    ) -> None:
+        self._fp = fills_provider
+        self._universe = set(universe)
+        self._lookups = lookups
+        self._cfg = config
+        self._basket = basket          # None ⇒ directional (the gated measure)
+        self._train_ms = config.train_days * _DAY_MS
+        self._cache: dict[tuple[str, int], pl.DataFrame] = {}
+
+    def _df(self, wallet: str, t0_ms: int) -> pl.DataFrame:
+        key = (wallet, t0_ms)
+        if key not in self._cache:                 # one fetch serves returns_fn + cutoff_fn
+            self._cache[key] = self._fp(wallet, t0_ms - self._train_ms, t0_ms)
+        return self._cache[key]
+
+    def returns_fn(self, wallet: str, t0_ms: int) -> np.ndarray:
+        df = self._df(wallet, t0_ms)
+        if df is None or df.height == 0:
+            return np.empty(0, dtype=np.float64)
+        return followable_returns(
+            df, universe=self._universe, lookups=self._lookups,
+            lag_ms=self._cfg.lag_bucket_ms, min_hold_ms=self._cfg.min_hold_ms,
+            before_ms=t0_ms, basket=self._basket, beta=self._cfg.beta)
+
+    def cutoff_fn(self, wallet: str, t0_ms: int) -> int:
+        df = self._df(wallet, t0_ms)
+        if df is None or df.height == 0:
+            return 0
+        sub = df.filter(pl.col("time") < t0_ms)
+        if sub.height == 0:
+            return 0
+        mx = sub["tid"].max()
+        return int(mx) if isinstance(mx, (int, float)) else 0
+
+    def reset(self) -> None:
+        """Drop the per-roll fetch cache (call between rolls so a new T0 re-fetches)."""
+        self._cache.clear()

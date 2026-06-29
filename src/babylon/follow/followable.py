@@ -88,6 +88,42 @@ def followable_skill(
     return WalletSkill(wallet, float(np.median(arr)), float(arr.mean()), arr.size, coins)
 
 
+def followable_returns(
+    df: pl.DataFrame, *, universe: set[str],
+    lookups: dict[str, tuple[np.ndarray, np.ndarray]], lag_ms: int, min_hold_ms: int,
+    before_ms: int | None = None, basket: tuple[np.ndarray, np.ndarray] | None = None,
+    beta: float = 1.0, taker_only: bool = True, conviction_only: bool = True,
+) -> np.ndarray:
+    """Per-round-trip follower returns (bps), as `followable_skill` but returning the raw
+    array — for selection ranking + Kelly weighting. `basket=None` ⇒ the DIRECTIONAL
+    (deployed/gated) measure; pass a basket for the diagnostic neutralized series.
+    `before_ms` restricts to round-trips fully CLOSED before it (the rolling-seam guard so a
+    trade straddling T0 can't leak into training)."""
+    bps: list[float] = []
+    for (coin,), g in df.sort("time").group_by("coin", maintain_order=True):
+        c = str(coin)
+        if c not in universe or c not in lookups:
+            continue
+        lookup = lookups[c]
+        for p in _positions_for(g):
+            if (taker_only and not p.taker_open) or (conviction_only and not p.conviction_open):
+                continue
+            if p.hold_ms < min_hold_ms:
+                continue
+            if before_ms is not None and p.exit_t >= before_ms:
+                continue  # seam guard: only round-trips closed before T0
+            ein = _close_at(lookup, p.entry_t + lag_ms)
+            eout = _close_at(lookup, p.exit_t + lag_ms)
+            if ein is None or eout is None:
+                continue
+            raw = p.direction * (eout / ein - 1.0) * 1e4
+            if basket is not None:
+                raw -= p.direction * beta * _basket_ret_bps(
+                    basket, p.entry_t + lag_ms, p.exit_t + lag_ms)
+            bps.append(raw)
+    return np.asarray(bps, dtype=np.float64)
+
+
 def rank_followable(
     fills_dir: Path, start_ms: int, end_ms: int, *,
     universe: set[str], lookups: dict[str, tuple[np.ndarray, np.ndarray]],

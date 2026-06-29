@@ -35,7 +35,7 @@ from typing import Any
 from babylon.core import Order, TimeInForce
 from babylon.data.models import L2Book
 from babylon.exchange.websocket import Subscription, WebSocketFeed
-from babylon.execution.fill_model import Book, FillReport
+from babylon.execution.fill_model import Book
 from babylon.execution.paper import PaperExecutor
 from babylon.follow.watcher import WalletWatcher
 from babylon.logging import get_logger
@@ -143,7 +143,8 @@ class FollowRunner:
         """One trading tick. Heartbeat halt (monotonic) → flatten-only; a stale book blocks
         ENTRIES but a reduce-only EXIT is allowed within exit_staleness; a position with no
         usable price is reported `frozen` (operator alert) rather than silently held."""
-        halted = self._last_poll_mono is None or now_mono - self._last_poll_mono > self._heartbeat_ms
+        halted = (self._last_poll_mono is None
+                  or now_mono - self._last_poll_mono > self._heartbeat_ms)
         fills: list[object] = []
         no_fills: dict[str, str] = {}
         stale: list[str] = []
@@ -283,7 +284,7 @@ class FollowRunner:
                 cycle += 1
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=poll_pause_s)
-                except (TimeoutError, asyncio.TimeoutError):
+                except TimeoutError:
                     pass
         finally:
             stop.set()  # tear down the sibling on any exit
@@ -305,7 +306,7 @@ class FollowRunner:
                     log.error("tick.failed", error=str(exc))
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=tick_s)
-                except (TimeoutError, asyncio.TimeoutError):
+                except TimeoutError:
                     pass
         finally:
             stop.set()
