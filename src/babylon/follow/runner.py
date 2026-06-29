@@ -53,6 +53,8 @@ class TickReport:
     stale_skipped: tuple[str, ...]
     halted: bool = False          # signal stale (no recent successful poll) → flatten only
     frozen: tuple[str, ...] = ()  # OPEN positions that can't be managed (feed dead) — ALERT
+    signal: int = 0               # coins with a non-zero consensus target (diagnostics)
+    max_target_usd: float = 0.0   # largest per-coin target notional (vs the deadband)
 
 
 class FollowRunner:
@@ -158,6 +160,8 @@ class FollowRunner:
         no_fills: dict[str, str] = {}
         stale: list[str] = []
         frozen: list[str] = []
+        signal = 0
+        max_target_usd = 0.0
         for coin in self._universe:
             bt = self._books.get(coin)
             book = bt[0] if bt is not None else None
@@ -176,6 +180,9 @@ class FollowRunner:
             if mark is None:                             # no price → can't act on an open pos
                 frozen.append(coin) if current != 0 else stale.append(coin)
                 continue
+            if target != 0:                              # diagnostics: is there a live signal?
+                signal += 1
+                max_target_usd = max(max_target_usd, float(abs(target) * mark))
             delta = target - current
             if abs(delta) * mark < self._min_rebal:
                 continue
@@ -202,7 +209,8 @@ class FollowRunner:
                 no_fills[coin] = report.no_fill_reason or "no fill"
         if frozen:
             log.error("tick.frozen_positions", coins=frozen)  # operator must intervene
-        return TickReport(tuple(fills), no_fills, tuple(stale), halted=halted, frozen=tuple(frozen))
+        return TickReport(tuple(fills), no_fills, tuple(stale), halted=halted,
+                          frozen=tuple(frozen), signal=signal, max_target_usd=max_target_usd)
 
     async def poll(self, now_wall: int, now_mono: int,
                    stop: asyncio.Event | None = None) -> int:
@@ -318,7 +326,8 @@ class FollowRunner:
                         log.info("tick.status", n=n, books=len(self._books),
                                  stale=len(rep.stale_skipped), positions=len(self._ex.net_positions()),
                                  equity=round(float(self.equity()), 2), halted=rep.halted,
-                                 frozen=len(rep.frozen))
+                                 frozen=len(rep.frozen), signal=rep.signal,
+                                 max_target_usd=round(rep.max_target_usd, 1))
                         if checkpoint_path is not None:
                             self.checkpoint(checkpoint_path)
                 except Exception as exc:  # noqa: BLE001 — one bad tick must not kill the run

@@ -89,7 +89,8 @@ class LiveFollowSystem:
         executor = PaperExecutor(taker_fee_bps=config.fee_bps, mode=config.execution,
                                  impact_bps=config.impact_bps, max_depth_frac=config.max_depth_frac)
         runner = FollowRunner(watcher, weights, universe, sizer, executor,
-                              budget_usd=budget_usd, max_coin_frac=config.max_coin_frac)
+                              budget_usd=budget_usd, max_coin_frac=config.max_coin_frac,
+                              min_rebalance_usd=2.0)  # diffuse consensus → small per-coin targets
         attach_l2_feed(runner, feed, universe)
         if checkpoint_path.exists():
             runner.from_state(json.loads(checkpoint_path.read_text()))
