@@ -397,10 +397,13 @@ backtest fill model.
 re-roll wired: `watcher.update_roster` + `runner.adopt_roster` + `LiveFollowSystem.reroll`/
 `_roll_loop` (biweekly cadence, registers a new immutable manifest + adopts live).
 
-**Remaining to ARM (ops/config + one small glue `main()`, no new core logic):**
-1. `main()`: instantiate `InfoClient` + `WebSocketFeed` + `RestFillsProvider` +
-   `SelectionAdapter`, load candle lookups + the candidate pool + 187-coin universe, lock the
-   `ExperimentConfig` at T0, then `LiveFollowSystem.build(... prefetch=provider.prefetch,
-   reset=adapter.reset)` + `run()`.
-2. Deploy to the droplet, smoke under real load, then start. (Candidate pool + exact T0 are
-   user decisions.)
+**Entrypoint — DONE.** `follow/main.py`: `run_live()` + `locked_config()` (approved
+numbers, universe-hash-bound) + a CLI. `python -m babylon.follow.main [--dry-run]
+[--top-quintile-only] [--candidates F] [--testnet]`. Candidate pool defaults to the BROAD
+study CSV (~1404 wallets), NOT the 281 in-sample winners (survivorship + pool-mean-control
+discrimination). T0 = deploy time, locked then. `--dry-run` = prefetch + initial roll only
+(the pre-arm smoke). 102 follow tests; adapters injectable so main is tested offline.
+
+**CODE-COMPLETE. Remaining = ops only:** copy to the droplet (104.248.116.0, 1GB+swap, uv),
+`uv run python -m babylon.follow.main --dry-run` to smoke under real REST/pool, then drop
+`--dry-run` to arm. (RAM measured: 261MB re-rank peak / 83MB steady. Exact T0 = arm time.)
