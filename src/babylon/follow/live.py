@@ -66,7 +66,7 @@ class LiveFollowSystem:
         cls, *, config: ExperimentConfig, candidates: list[str], universe: list[str],
         source: FillSource, feed: WebSocketFeed, returns_fn: ReturnsFn, cutoff_fn: CutoffFn,
         t0_ms: int, budget_usd: float, registry_path: Path, checkpoint_path: Path,
-        analysis_script_hash: str, poll_interval_s: float = 1.05,
+        analysis_script_hash: str, poll_interval_s: float = 2.0,
         prepare: PrepareFn | None = None, max_roster_size: int | None = None,
     ) -> LiveFollowSystem:
         config.validate()

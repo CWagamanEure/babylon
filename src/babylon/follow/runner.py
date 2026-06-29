@@ -216,11 +216,12 @@ class FollowRunner:
             try:
                 await self._watcher.poll_wallet(wallet, now_wall)
                 ok += 1
+                self._last_poll_mono = now_mono  # heartbeat tracks LIVENESS, not sweep completion:
+                # fresh as soon as the loop polls anything, so a slow rate-limited sweep over a
+                # large roster doesn't keep us halted. Positions ramp up as wallets are polled.
             except Exception as exc:  # noqa: BLE001 — per-wallet isolation (audit #7)
                 log.warning("poll.wallet_failed", wallet=wallet, error=str(exc))
-        if ok:
-            self._last_poll_mono = now_mono
-        else:
+        if not ok:
             log.error("poll.total_failure", n=len(self._weights))
         return ok
 
