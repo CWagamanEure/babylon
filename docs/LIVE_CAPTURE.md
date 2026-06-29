@@ -171,3 +171,18 @@ accordingly.
    work.
 4. **Swap in only with fixes #1–#4** (esp. the run_id DB-hash for re-derivability), once
    proven. Phase 2 (discovery) is a later, separate-infra project.
+
+## Retention & resilience (droplet-bounded, fail-safe)
+- **Cheap vs expensive:** round-trips (`ret_bps`) are tiny (~10 MB/month Phase-1) — keep ~1yr.
+  Raw fills are bigger — keep a rolling ~3–7 days (restart + open-position buffer only). A
+  per-second mid-log would be the real beast (~10 GB/month) → DON'T keep it; on restart DROP
+  in-flight markouts that came due during downtime (lose a small fraction, no storage).
+- Nightly prune: `DELETE WHERE exit_t < now − retention`. Config: `roundtrip_retention_days`
+  (365), `fill_buffer_days` (7). Phase-1 disk stays < 1 GB.
+- **Resilience invariant — candle is the re-fetchable FLOOR, live capture an additive upgrade.**
+  Fills are always backfillable (REST `userFillsByTime`), so we never lose *when/what* a wallet
+  traded. Only the markout *price* is ephemeral: a round-trip gets `source=live` (sharp book
+  mark) when capture is healthy, else `source=candle` (re-fetchable proxy) — every round-trip
+  is ALWAYS markable. A total capture failure degrades to exactly today's (validated) candle
+  system; the capture layer can only sharpen, never break us below the floor. The `source` tag
+  also serves the pre-registration determinism (reproducible-candle vs ephemeral-book marks).
