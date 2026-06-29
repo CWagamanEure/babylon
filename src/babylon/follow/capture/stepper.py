@@ -22,8 +22,13 @@ import numpy as np
 from babylon.follow.skill import _REL_TOL, ZERO_HASH, Position
 
 
+# All three carry `rid` — a monotonic per-(wallet,coin) round-trip id. The capture layer
+# keys every markout on (wallet, coin, rid), NOT on entry_t: a same-ms flip emits
+# Close(rid=k) + Open(rid=k+1) at the SAME entry_t, so entry_t collides but rid never does.
+# rid == -1 marks a position opened before observation (no Open emitted) → drop.
 @dataclass(frozen=True, slots=True)
 class Open:
+    rid: int
     coin: str
     direction: int          # +1 long / -1 short
     entry_t: int            # ms — schedule the entry markout at entry_t + lag
@@ -32,27 +37,39 @@ class Open:
 
 
 @dataclass(frozen=True, slots=True)
+class Add:
+    rid: int                # scale-in to round-trip `rid` (same side); lets the capture layer
+    coin: str               # mark each tranche if it wants the faithful per-tranche follower
+    add_t: int              # model (default: whole position marked at the first Open)
+    size: float
+    px: float
+
+
+@dataclass(frozen=True, slots=True)
 class Close:
+    rid: int
     coin: str
     direction: int
-    entry_t: int            # links to the Open's markout
+    entry_t: int            # the rid's first-open time (diagnostics; link on rid, not this)
     exit_t: int             # schedule the exit markout at exit_t + lag
     entry_px: float         # wallet's size-weighted avg (diagnostics only)
     exit_px: float
     taker_open: bool
     conviction: bool
-    valid: bool             # False ⇒ opened before we observed it → unmarkable, drop
+    valid: bool             # False (rid==-1) ⇒ opened before we observed it → drop, don't link
 
 
 class CoinStepper:
     """One coin's signed-position machine for one wallet. Feed fills in (time, tid) order."""
 
-    def __init__(self, coin: str, startpos: float = 0.0) -> None:
+    def __init__(self, coin: str, startpos: float = 0.0, next_rid: int = 0) -> None:
         self.coin = coin
         self.pos = float(startpos)
-        # a position seeded mid-window (nonzero startpos) has an unobserved open → not valid
+        # a position seeded mid-window (nonzero startpos) has an unobserved open → rid -1, not valid
         self._maxabs = abs(self.pos)
         self.valid = abs(self.pos) < self._tol()
+        self.rid = -1 if self.pos != 0.0 else 0   # current open round-trip's id (-1 = unobserved)
+        self._next_rid = next_rid                 # monotonic counter (durable across restart)
         self.en = self.es = self.xn = self.xs = 0.0   # open position's entry/exit notional+size
         self.et = 0
         self.topen = self.conv = False
@@ -60,19 +77,28 @@ class CoinStepper:
     def _tol(self) -> float:
         return max(_REL_TOL * self._maxabs, 1e-15)
 
+    def _new_rid(self) -> int:
+        r = self._next_rid
+        self._next_rid += 1
+        return r
+
     def step(self, time: int, px: float, sz: float, side: str, crossed: bool,
-             hsh: str | None = None) -> list[Open | Close]:
-        ev: list[Open | Close] = []
+             hsh: str | None = None) -> list[Open | Add | Close]:
+        ev: list[Open | Add | Close] = []
         d = float(sz) if side == "B" else -float(sz)
         conv_i = hsh is None or str(hsh) != ZERO_HASH
         self._maxabs = max(self._maxabs, abs(self.pos + d))
         tol = self._tol()
         if self.pos == 0.0 or (d > 0) == (self.pos > 0):          # opening (flat or same-side add)
             if self.pos == 0.0:
+                self.rid = self._new_rid()
                 self.et, self.topen, self.conv = int(time), bool(crossed), conv_i
                 self.en = self.es = 0.0
                 self.valid = True
-                ev.append(Open(self.coin, 1 if d > 0 else -1, self.et, self.topen, self.conv))
+                ev.append(Open(self.rid, self.coin, 1 if d > 0 else -1, self.et,
+                               self.topen, self.conv))
+            else:                                                  # scale-in to the open round-trip
+                ev.append(Add(self.rid, self.coin, int(time), abs(d), float(px)))
             self.en += abs(d) * float(px)
             self.es += abs(d)
             self.pos += d
@@ -84,16 +110,19 @@ class CoinStepper:
             self.pos += close if self.pos < 0 else -close
             if abs(self.pos) < tol:                                # position closed
                 if self.es > 0 and self.xs > 0:
-                    ev.append(Close(self.coin, held, self.et, int(time),
+                    ev.append(Close(self.rid, self.coin, held, self.et, int(time),
                                     self.en / self.es, self.xn / self.xs,
                                     self.topen, self.conv, self.valid))
                 self.en = self.es = self.xn = self.xs = 0.0
                 self.pos = 0.0                                     # exact flat (no float residual)
+                self.rid = -1
                 leftover = abs(d) - close
                 if leftover > tol:                                # flip → open the opposite side
+                    self.rid = self._new_rid()
                     self.et, self.topen, self.conv = int(time), bool(crossed), conv_i
                     self.valid = True
-                    ev.append(Open(self.coin, 1 if d > 0 else -1, self.et, self.topen, self.conv))
+                    ev.append(Open(self.rid, self.coin, 1 if d > 0 else -1, self.et,
+                                   self.topen, self.conv))
                     self.en, self.es = leftover * float(px), leftover
                     self.pos = leftover if d > 0 else -leftover
         return ev

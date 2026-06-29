@@ -70,21 +70,28 @@ def reconstruct(
     reconstructed but NOT emitted (its entry basis is unknown). ``pos`` is reset to
     EXACT 0 on close so a within-tolerance float residual can't leak the prior
     position's entry_t/taker_open into the next one.
+
+    The flat-tolerance is anchored to a RUNNING (causal) max|pos|, not the full-sequence
+    cumsum max — so this batch reconstructor is bit-for-bit identical to the streaming
+    ``capture.CoinStepper`` (a future-dependent tol can't be reproduced live; see
+    test_capture_stepper's adversarial fuzz).
     """
     signed = np.where(side == "B", sz, -sz)
-    max_abs = float(np.abs(np.cumsum(signed)).max()) if signed.size else 0.0
-    tol = max(_REL_TOL * max_abs, 1e-15)
     out: list[Position] = []
     def _conv(i: int) -> bool:
         return hashes is None or str(hashes[i]) != ZERO_HASH
 
     pos = float(startpos[0]) if startpos is not None and startpos.size else 0.0
+    maxabs = abs(pos)
+    tol = max(_REL_TOL * maxabs, 1e-15)
     valid = abs(pos) < tol  # only emit positions whose open we actually observed
     en = es = xn = xs = 0.0  # entry/exit notional & size of the OPEN position
     et = 0
     topen = conv = False
     for i in range(times.size):
         d = float(signed[i])
+        maxabs = max(maxabs, abs(pos + d))
+        tol = max(_REL_TOL * maxabs, 1e-15)
         if pos == 0.0 or (d > 0) == (pos > 0):  # opening (from flat, or adding same side)
             if pos == 0.0:
                 et, topen, conv, en, es, valid = (
