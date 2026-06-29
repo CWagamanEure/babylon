@@ -29,7 +29,7 @@ from babylon.config import Network
 from babylon.exchange.constants import endpoints_for
 from babylon.exchange.rest import InfoClient
 from babylon.exchange.websocket import WebSocketFeed
-from babylon.follow.experiment import ExperimentConfig
+from babylon.follow.experiment import ExperimentConfig, Registry
 from babylon.follow.fills_source import RestFillsProvider
 from babylon.follow.followable import load_price_lookups
 from babylon.follow.live import LiveFollowSystem, wall_ms
@@ -100,7 +100,8 @@ async def run_live(
     adapter = SelectionAdapter(provider, universe=set(universe), lookups=lookups, config=config)  # type: ignore[arg-type]
     async with info:  # type: ignore[attr-defined]
         t0 = t0_ms if t0_ms is not None else wall_ms()
-        if prefetch is not None:
+        resuming = Registry(registry_path).latest() is not None
+        if prefetch is not None and not resuming:        # a restart resumes the committed roster — no re-roll, no prefetch
             log.info("live.prefetch", n_candidates=len(candidates), t0=t0)
             await prefetch(candidates, t0 - config.train_days * _DAY_MS, t0)
         system = LiveFollowSystem.build(

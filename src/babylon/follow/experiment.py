@@ -208,6 +208,23 @@ class Registry:
     def committed(self, t0_ms: int) -> RunManifest | None:
         return self._committed(t0_ms)
 
+    def latest(self) -> RunManifest | None:
+        """The most recent committed sub-period manifest (max T0) — what a restart resumes,
+        re-deriving + chain-verifying every record on the way (tamper-evident)."""
+        best: RunManifest | None = None
+        for body in _read_chained(self._path):
+            man = body["manifest"]
+            assert isinstance(man, dict)
+            m = RunManifest(
+                t0_ms=man["t0_ms"], roster=tuple(man["roster"]),
+                edge_weights=man["edge_weights"], train_cutoff_tids=man["train_cutoff_tids"],
+                config_hash=man["config_hash"], analysis_script_hash=man["analysis_script_hash"])
+            if m.run_id() != body["run_id"]:
+                raise ValueError(f"stored run_id {body['run_id']} != re-derived: tampered")
+            if best is None or m.t0_ms > best.t0_ms:
+                best = m
+        return best
+
     def register(self, manifest: RunManifest) -> str:
         manifest.validate()
         rid = manifest.run_id()

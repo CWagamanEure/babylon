@@ -101,6 +101,23 @@ def test_dry_run_builds_and_rolls(tmp_path):
     assert system.config.train_days == 1
 
 
+def test_resume_skips_reroll_and_prefetch(tmp_path):
+    fills_dir = tmp_path / "fills"; fills_dir.mkdir()
+    cands = [f"w{i}" for i in range(10)]
+    for i, w in enumerate(cands):
+        _roundtrips(108.0 + i, tid0=10 * i).write_parquet(fills_dir / f"{w}.parquet")
+    calls = {"n": 0}
+    async def pf(wallets, s, e): calls["n"] += 1
+    kw = dict(candidates=cands, universe=["TESTC"], registry_path=tmp_path / "reg.jsonl",
+              checkpoint_path=tmp_path / "ckpt.json", config=_cfg(), lookups=LOOK,
+              info=_FakeInfo(), feed=_FakeFeed(), provider=ParquetFillsProvider(fills_dir),
+              prefetch=pf, dry_run=True)
+    s1 = asyncio.run(run_live(t0_ms=6 * H, **kw))             # first: rolls + prefetches
+    assert calls["n"] == 1
+    s2 = asyncio.run(run_live(t0_ms=999 * H, **kw))           # restart: resume, no prefetch/re-roll
+    assert calls["n"] == 1 and s2.run_id == s1.run_id and s2.t0_ms == 6 * H
+
+
 def test_dry_run_empty_pool_raises(tmp_path):
     (tmp_path / "fills").mkdir()
     with pytest.raises(ValueError, match="empty roster"):

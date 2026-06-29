@@ -89,6 +89,17 @@ def test_registry_blocks_rerank_and_detects_tamper(tmp_path):
         reg.committed(1000)
 
 
+def test_registry_latest_returns_max_t0(tmp_path):
+    cfg = _cfg()
+    reg = Registry(tmp_path / "reg.jsonl")
+    assert reg.latest() is None
+    reg.register(_manifest(cfg, t0=1000))
+    reg.register(RunManifest.build(t0_ms=5000, edge_weights={"0xa": 1.0},
+                                   train_cutoff_tids={"0xa": 9}, config=cfg,
+                                   analysis_script_hash="ah"))
+    assert reg.latest().t0_ms == 5000                  # most recent sub-period
+
+
 def test_decide_requires_committed_run(tmp_path):
     cfg, reg, rid, log = _setup(tmp_path)
     with pytest.raises(ValueError, match="not in the registry"):

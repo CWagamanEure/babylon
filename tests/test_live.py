@@ -64,6 +64,13 @@ def test_build_rolls_and_registers(tmp_path):
     assert sys.runner._weights                                 # roster weights wired in
 
 
+def test_build_resumes_latest_committed_not_reroll(tmp_path):
+    sys1 = _build(tmp_path)                          # first roll at t0=10_000
+    rid1, t01 = sys1.run_id, sys1.t0_ms
+    sys2 = _build(tmp_path, t0_ms=99_999)            # restart with a NEW t0 → must resume
+    assert sys2.run_id == rid1 and sys2.t0_ms == t01  # resumed committed roster, did NOT re-roll
+
+
 def test_clock_contract_is_wallclock_and_monotonic():
     # book staleness must use wall-clock ms (book ts are exchange epoch ms)
     assert wall_ms() > 1_700_000_000_000                       # plausible 2024+ UNIX ms

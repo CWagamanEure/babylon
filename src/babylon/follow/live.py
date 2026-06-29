@@ -74,7 +74,16 @@ class LiveFollowSystem:
         registry = Registry(registry_path)
         scheduler = RollScheduler(candidates, returns_fn, cutoff_fn, config, registry,
                                   analysis_script_hash=analysis_script_hash)
-        roster, weights, run_id = scheduler.roll(t0_ms)        # initial roll → immutable manifest
+        prior = registry.latest()
+        if prior is not None:
+            # RESUME the latest committed sub-period — do NOT re-roll (the registry is the
+            # source of truth; re-ranking on a restart would conflict with the immutable
+            # manifest and crash-loop). The checkpoint restores positions below.
+            weights, run_id, t0_ms = prior.edge_weights, prior.run_id(), prior.t0_ms
+            roster = list(weights)
+            log.info("live.resume_roster", run_id=run_id, t0_ms=t0_ms, n=len(roster))
+        else:
+            roster, weights, run_id = scheduler.roll(t0_ms)    # first roll → immutable manifest
         watcher = WalletWatcher(source, roster, min_interval_s=poll_interval_s)
         sizer = FixedFractionSizer(per_coin_fraction=config.max_coin_frac)
         executor = PaperExecutor(taker_fee_bps=config.fee_bps, mode=config.execution,
