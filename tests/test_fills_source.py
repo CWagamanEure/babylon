@@ -43,7 +43,7 @@ def test_page_fills_under_cap_single_call():
 
 def test_rest_provider_prefetch_then_sync_read():
     info = _FakeInfo([_raw(1, 100), _raw(2, 500), _raw(3, 5000)])
-    prov = RestFillsProvider(info)
+    prov = RestFillsProvider(info, min_interval_s=0.0)
     asyncio.run(prov.prefetch(["w"], 0, 10_000))
     full = prov("w", 0, 10_000)
     assert full.height == 3

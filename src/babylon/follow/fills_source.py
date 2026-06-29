@@ -13,6 +13,7 @@ share that millisecond).
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -52,11 +53,15 @@ def fills_to_frame(raw: list[dict[str, Any]]) -> pl.DataFrame:
     return pl.DataFrame(rows, schema=_SCHEMA).sort("time")
 
 
-async def page_fills(info: _Info, wallet: str, start_ms: int, end_ms: int) -> list[dict[str, Any]]:
-    """Fetch all of a wallet's fills in [start_ms, end_ms), paging past the 2000 cap."""
+async def page_fills(info: _Info, wallet: str, start_ms: int, end_ms: int, *,
+                     gap_s: float = 0.0) -> list[dict[str, Any]]:
+    """Fetch all of a wallet's fills in [start_ms, end_ms), paging past the 2000 cap.
+    `gap_s` paces each call to stay under the HL info weight limit (~1 req/s for fills)."""
     out: list[dict[str, Any]] = []
     cur = start_ms
     while cur < end_ms:
+        if gap_s:
+            await asyncio.sleep(gap_s)
         batch = await info.user_fills_by_time(wallet, cur, end_ms)
         if not batch:
             break
@@ -72,13 +77,15 @@ class RestFillsProvider:
     """Async-prefetch + sync-read. Call `await prefetch(...)` before each roll, then the
     SelectionAdapter reads synchronously during `RollScheduler.roll`."""
 
-    def __init__(self, info: _Info) -> None:
+    def __init__(self, info: _Info, *, min_interval_s: float = 1.1) -> None:
         self._info = info
         self._store: dict[str, pl.DataFrame] = {}
+        self._gap = min_interval_s   # ~1 req/s keeps the bulk prefetch under the HL limit
 
     async def prefetch(self, wallets: list[str], start_ms: int, end_ms: int) -> None:
         for w in wallets:
-            self._store[w] = fills_to_frame(await page_fills(self._info, w, start_ms, end_ms))
+            self._store[w] = fills_to_frame(
+                await page_fills(self._info, w, start_ms, end_ms, gap_s=self._gap))
 
     def __call__(self, wallet: str, start_ms: int, end_ms: int) -> pl.DataFrame:
         df = self._store.get(wallet)

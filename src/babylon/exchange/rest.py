@@ -7,6 +7,7 @@ EIP-712 signing) will live in a separate execution module built on the official
 
 from __future__ import annotations
 
+import asyncio
 from types import TracebackType
 from typing import Any, cast
 
@@ -40,12 +41,21 @@ class InfoClient:
             await self._session.close()
             self._session = None
 
-    async def _post(self, body: dict[str, Any]) -> Any:
+    async def _post(self, body: dict[str, Any], *, retries: int = 5) -> Any:
         if self._session is None:
             raise RuntimeError("InfoClient must be used as an async context manager")
-        async with self._session.post(self._url, json=body) as resp:
-            resp.raise_for_status()
-            return await resp.json()
+        delay = 1.0
+        for attempt in range(retries + 1):
+            async with self._session.post(self._url, json=body) as resp:
+                if resp.status == 429 and attempt < retries:  # rate-limited → back off + retry
+                    wait = float(resp.headers.get("Retry-After", delay))
+                    log.warning("rest.rate_limited", attempt=attempt, wait_s=min(wait, 30.0))
+                    await asyncio.sleep(min(wait, 30.0))
+                    delay = min(delay * 2, 30.0)
+                    continue
+                resp.raise_for_status()
+                return await resp.json()
+        raise RuntimeError("unreachable")  # loop returns or raises
 
     # --- market data ---------------------------------------------------------
 
