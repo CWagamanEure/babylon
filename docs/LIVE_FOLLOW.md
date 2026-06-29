@@ -404,6 +404,14 @@ study CSV (~1404 wallets), NOT the 281 in-sample winners (survivorship + pool-me
 discrimination). T0 = deploy time, locked then. `--dry-run` = prefetch + initial roll only
 (the pre-arm smoke). 102 follow tests; adapters injectable so main is tested offline.
 
-**CODE-COMPLETE. Remaining = ops only:** copy to the droplet (104.248.116.0, 1GB+swap, uv),
-`uv run python -m babylon.follow.main --dry-run` to smoke under real REST/pool, then drop
-`--dry-run` to arm. (RAM measured: 261MB re-rank peak / 83MB steady. Exact T0 = arm time.)
+**DEPLOYED + VALIDATED.** `scripts/deploy_follow.sh` + `deploy/babylon-follow.service`
+(auto-restart, resumes the committed roster + checkpoint). A `--dry-run` smoke ran the full
+pipeline clean against live HL: fresh candles (187 coins) → fills prefetch → followable
+select → top-quintile → Kelly → immutable manifest registered (hash-chained). Per-roll
+candle refresh (`candles_source.fetch_lookups`) keeps lookups fresh over the months;
+InfoClient has 429 retry + the bulk prefetch is throttled ~1 req/s.
+
+**TO ARM (one command):** on the droplet `cd /root/bablyon && uv run python -m
+babylon.follow.main` (broad ~1404 pool, mainnet, $1k). Startup ≈31min (187-coin candle
+fetch + 1404-wallet fills prefetch) → first roll registers the manifest → trades.
+Restart-safe. T0 locks at first start. 108 follow tests.
