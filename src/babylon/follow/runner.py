@@ -194,11 +194,15 @@ class FollowRunner:
             log.error("tick.frozen_positions", coins=frozen)  # operator must intervene
         return TickReport(tuple(fills), no_fills, tuple(stale), halted=halted, frozen=tuple(frozen))
 
-    async def poll(self, now_wall: int, now_mono: int) -> int:
+    async def poll(self, now_wall: int, now_mono: int,
+                   stop: asyncio.Event | None = None) -> int:
         """One watcher sweep; the heartbeat refreshes ONLY if ≥1 wallet polled OK (a total
-        failure must not look fresh). Returns the success count."""
+        failure must not look fresh). Honors `stop` mid-sweep so shutdown is prompt even at
+        the throttled roster scale. Returns the success count."""
         ok = 0
         for wallet in self._weights:
+            if stop is not None and stop.is_set():
+                break
             try:
                 await self._watcher.poll_wallet(wallet, now_wall)
                 ok += 1
@@ -275,7 +279,7 @@ class FollowRunner:
             while not stop.is_set():
                 if cycle % max(1, truthup_every) == 0:
                     await self._truthup_chunk_step(now_wall_fn())
-                await self.poll(now_wall_fn(), now_mono_fn())
+                await self.poll(now_wall_fn(), now_mono_fn(), stop)
                 cycle += 1
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=poll_pause_s)
