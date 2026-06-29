@@ -36,6 +36,10 @@ class SelectionAdapter:
         self._train_ms = config.train_days * _DAY_MS
         self._cache: dict[tuple[str, int], pl.DataFrame] = {}
 
+    def set_lookups(self, lookups: dict[str, tuple[np.ndarray, np.ndarray]]) -> None:
+        """Swap in fresh candle lookups for the next roll (live multi-month runs)."""
+        self._lookups = lookups
+
     def _df(self, wallet: str, t0_ms: int) -> pl.DataFrame:
         key = (wallet, t0_ms)
         if key not in self._cache:                 # one fetch serves returns_fn + cutoff_fn

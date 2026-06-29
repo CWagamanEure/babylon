@@ -31,8 +31,8 @@ from babylon.sizing.sizer import FixedFractionSizer
 
 log = get_logger("follow.live")
 
-# (wallets, start_ms, end_ms) -> awaitable that loads those wallets' fills for the roll
-PrefetchFn = Callable[[list[str], int, int], Awaitable[None]]
+# t0_ms -> awaitable that readies all roll-time data (fresh candles + fills) for that T0
+PrepareFn = Callable[[int], Awaitable[None]]
 
 
 def wall_ms() -> int:
@@ -59,8 +59,7 @@ class LiveFollowSystem:
     scheduler: RollScheduler
     candidates: list[str]
     t0_ms: int
-    prefetch: PrefetchFn | None = None   # async fills prefetch before a (re)roll
-    reset: Callable[[], None] | None = None  # drop the selection fetch cache between rolls
+    prepare: PrepareFn | None = None   # ready roll-time data (fresh candles + fills) for a T0
 
     @classmethod
     def build(
@@ -68,7 +67,7 @@ class LiveFollowSystem:
         source: FillSource, feed: WebSocketFeed, returns_fn: ReturnsFn, cutoff_fn: CutoffFn,
         t0_ms: int, budget_usd: float, registry_path: Path, checkpoint_path: Path,
         analysis_script_hash: str, poll_interval_s: float = 1.05,
-        prefetch: PrefetchFn | None = None, reset: Callable[[], None] | None = None,
+        prepare: PrepareFn | None = None,
     ) -> LiveFollowSystem:
         config.validate()
         registry = Registry(registry_path)
@@ -95,16 +94,14 @@ class LiveFollowSystem:
             runner.from_state(json.loads(checkpoint_path.read_text()))
             log.info("live.resumed", run_id=run_id, checkpoint=str(checkpoint_path))
         return cls(config, registry, runner, feed, run_id, checkpoint_path, scheduler,
-                   list(candidates), t0_ms, prefetch, reset)
+                   list(candidates), t0_ms, prepare)
 
     async def reroll(self, t0_ms: int) -> str:
-        """Roll the next sub-period (§v4.4): prefetch the fresh train window, re-rank,
-        register the new immutable manifest, and adopt the new roster into the running
-        loop. Returns the new run_id."""
-        if self.prefetch is not None:
-            await self.prefetch(self.candidates, t0_ms - self.config.train_days * _DAY_MS, t0_ms)
-        if self.reset is not None:
-            self.reset()
+        """Roll the next sub-period (§v4.4): ready the fresh train-window data (candles +
+        fills), re-rank, register the new immutable manifest, and adopt the new roster into
+        the running loop. Returns the new run_id."""
+        if self.prepare is not None:
+            await self.prepare(t0_ms)
         _roster, weights, run_id = self.scheduler.roll(t0_ms)
         self.runner.adopt_roster(weights, since_ms=t0_ms)
         self.run_id = run_id

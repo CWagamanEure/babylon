@@ -29,6 +29,7 @@ from babylon.config import Network
 from babylon.exchange.constants import endpoints_for
 from babylon.exchange.rest import InfoClient
 from babylon.exchange.websocket import WebSocketFeed
+from babylon.follow.candles_source import fetch_lookups
 from babylon.follow.experiment import ExperimentConfig, Registry
 from babylon.follow.fills_source import RestFillsProvider
 from babylon.follow.followable import load_price_lookups
@@ -38,6 +39,7 @@ from babylon.logging import get_logger
 
 log = get_logger("follow.main")
 _DAY_MS = 86_400_000
+_DEFAULT = object()   # sentinel: "refresh_lookups not specified" vs explicit None
 
 
 def universe_hash(universe: list[str]) -> str:
@@ -82,33 +84,48 @@ async def run_live(
     config: ExperimentConfig | None = None, t0_ms: int | None = None,
     lookups: dict[str, tuple[Any, Any]] | None = None, info: object = None, feed: object = None,
     provider: object = None,
-    prefetch: Callable[[list[str], int, int], Awaitable[None]] | None = None, **run_kw: object,
+    prefetch: Callable[[list[str], int, int], Awaitable[None]] | None = None,
+    refresh_lookups: object = _DEFAULT, **run_kw: object,
 ) -> LiveFollowSystem:
-    """Orchestrate: lock config → prefetch the trailing train window → build (initial roll
-    registers the manifest) → run. Adapters injectable for tests; real ones built by default."""
+    """Orchestrate: lock config → ready roll-time data (fresh candles + fills) → build
+    (initial roll registers the manifest) → run. Adapters injectable for tests; real ones
+    built by default. A restart resumes the committed roster (no re-roll, no data fetch)."""
     ep = endpoints_for(network)
     config = config or locked_config(universe, execution=execution)
     config.validate()
-    if lookups is None:
-        assert candles_dir is not None, "candles_dir or lookups required"
-        lookups = load_price_lookups(candles_dir)
     info = info or InfoClient(ep.rest)
     feed = feed or WebSocketFeed(ep.ws)
     provider = provider or RestFillsProvider(info)  # type: ignore[arg-type]
     if prefetch is None and isinstance(provider, RestFillsProvider):
         prefetch = provider.prefetch
-    adapter = SelectionAdapter(provider, universe=set(universe), lookups=lookups, config=config)  # type: ignore[arg-type]
+    # candle lookups: static (tests / candles_dir) or fetched fresh per roll (live default)
+    if refresh_lookups is _DEFAULT:
+        refresh_lookups = None if lookups is not None else \
+            (lambda u, s, e: fetch_lookups(info, u, s, e))  # type: ignore[arg-type]
+    if lookups is None and refresh_lookups is None and candles_dir is not None:
+        lookups = load_price_lookups(candles_dir)
+    adapter = SelectionAdapter(provider, universe=set(universe), lookups=lookups or {}, config=config)  # type: ignore[arg-type]
+    train_ms = config.train_days * _DAY_MS
+
+    async def prepare(t0: int) -> None:
+        if refresh_lookups is not None:
+            log.info("live.refresh_candles", n=len(universe), t0=t0)
+            adapter.set_lookups(await refresh_lookups(universe, t0 - train_ms, t0))  # type: ignore[operator]
+        if prefetch is not None:
+            log.info("live.prefetch", n_candidates=len(candidates), t0=t0)
+            await prefetch(candidates, t0 - train_ms, t0)
+        adapter.reset()
+
     async with info:  # type: ignore[attr-defined]
         t0 = t0_ms if t0_ms is not None else wall_ms()
         resuming = Registry(registry_path).latest() is not None
-        if prefetch is not None and not resuming:        # a restart resumes the committed roster — no re-roll, no prefetch
-            log.info("live.prefetch", n_candidates=len(candidates), t0=t0)
-            await prefetch(candidates, t0 - config.train_days * _DAY_MS, t0)
+        if not resuming:                                  # a restart resumes the committed roster
+            await prepare(t0)
         system = LiveFollowSystem.build(
             config=config, candidates=candidates, universe=universe, source=info, feed=feed,  # type: ignore[arg-type]
             returns_fn=adapter.returns_fn, cutoff_fn=adapter.cutoff_fn, t0_ms=t0,
             budget_usd=budget_usd, registry_path=registry_path, checkpoint_path=checkpoint_path,
-            analysis_script_hash=analysis_hash(), prefetch=prefetch, reset=adapter.reset)
+            analysis_script_hash=analysis_hash(), prepare=prepare)
         log.info("live.built", run_id=system.run_id, roster=len(system.runner._weights),  # noqa: SLF001
                  dry_run=dry_run)
         if dry_run:
