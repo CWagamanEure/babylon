@@ -123,12 +123,12 @@ class Registry:
     def __init__(self, path: Path) -> None:
         self._path = path
 
-    def _read(self) -> list[dict]:
+    def _read(self) -> list[dict[str, object]]:
         if not self._path.exists():
             return []
         return [json.loads(line) for line in self._path.read_text().splitlines() if line.strip()]
 
-    def committed(self, t0_ms: int) -> dict | None:
+    def committed(self, t0_ms: int) -> dict[str, object] | None:
         for rec in self._read():
             if rec["t0_ms"] == t0_ms:
                 return rec
