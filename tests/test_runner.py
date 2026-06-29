@@ -22,6 +22,7 @@ def _runner(weights, *, per_coin=0.05, max_coin=0.08):
     ex = PaperExecutor(taker_fee_bps=4.5, mode="retail", impact_bps=6.0, max_depth_frac=0.25)
     r = FollowRunner(w, weights, ["ZEC"], sizer, ex, budget_usd=1000.0,
                      max_coin_frac=max_coin, staleness_ms=30_000, min_rebalance_usd=5.0)
+    r._last_poll_ok = 0          # mark the signal fresh (heartbeat) for reconcile tests
     return r, w, ex
 
 
@@ -80,3 +81,44 @@ def test_thin_book_no_fill_reported():
     r.on_book("ZEC", _book(100.0, sz=1.0), ts=1)       # target ~2 units vs 1 visible → >25% cap
     rep = r.tick(now=1)
     assert "ZEC" in rep.no_fills and ex.net_position("ZEC") == Decimal(0)
+
+
+def test_heartbeat_halts_stale_signal():
+    r, w, ex = _runner({"a": 1.0})
+    w._pos = {"a": {"ZEC": 5.0}}
+    r.on_book("ZEC", _book(100.0), ts=1_000_000)
+    r._last_poll_ok = None                              # signal never polled → halt
+    rep = r.tick(now=1_000_000)
+    assert rep.halted and not rep.fills and ex.net_position("ZEC") == Decimal(0)
+    r._last_poll_ok = 100                               # last poll 999_900ms ago > 600s heartbeat
+    assert r.tick(now=1_000_000).halted
+
+
+def test_book_from_l2():
+    import asyncio
+    from babylon.data.models import L2Book
+    from babylon.follow.runner import book_from_l2
+    l2 = L2Book.from_ws({"coin": "ZEC", "time": 5,
+                         "levels": [[{"px": "99", "sz": "10", "n": 1}],
+                                    [{"px": "100", "sz": "10", "n": 1}]]})
+    b = book_from_l2(l2)
+    assert b.best_bid == 99.0 and b.best_ask == 100.0 and b.bid_sz == (10.0,)
+
+
+def test_run_loop_ticks_and_stops():
+    import asyncio
+    r, w, ex = _runner({"a": 1.0})
+    w._pos = {"a": {"ZEC": 5.0}}
+    r.on_book("ZEC", _book(100.0), ts=0)
+    clock = {"t": 0}
+    def now(): clock["t"] += 1; return clock["t"]
+    async def drive():
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            r.run(now, tick_s=0.002, truthup_s=1e9, poll_pause_s=0.002, stop=stop))
+        await asyncio.sleep(0.05)
+        stop.set()
+        await task
+    asyncio.run(drive())
+    # the poll loop set the heartbeat fresh and the tick loop opened the position
+    assert ex.net_position("ZEC") == Decimal("0.5")
