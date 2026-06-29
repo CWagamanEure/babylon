@@ -5,11 +5,20 @@ WalletWatcher (polled on the same event loop) feeds the aggregate consensus; eac
 trading tick sizes a per-coin target from the edge-weighted consensus, reconciles it
 against the executor's net, and fills via PaperExecutor.submit_book against the LIVE L2
 book (depth-aware, cost in the fill price). Single aggregate strategy → a direct
-per-coin reconcile (no multi-strategy netting needed).
+per-coin reconcile.
 
-Built to the executor audit's integration spec: it stores full L2 depth (not just
-top-of-book), unpacks (fill, report), gates the net/journal on `fill is not None`, and
-applies a staleness guard so a quiet coin is never traded on a stale book.
+Hardened against the run-loop audit's failure modes:
+- TWO clocks: a MONOTONIC clock for liveness (heartbeat) and the exchange WALL-CLOCK for
+  book staleness (book ts are exchange-epoch ms) — one clock can't serve both safely.
+- Heartbeat only refreshes on a SUCCESSFUL poll sweep (a total-failure sweep no longer
+  looks fresh → the dead-feed guard actually fires).
+- Loops are isolated and tear each other down: a tick exception is logged-and-continued,
+  and any loop exit sets `stop` so a crash can't leave a heartbeat-refreshing orphan.
+- Reduce-only EXIT is allowed on a stale book / halted signal (within exit_staleness) so a
+  position whose feed died can still be flattened — only ENTRIES require a fresh book.
+- Flip hysteresis: a sign reversal is gated by a cooldown so a flapping wallet can't churn.
+- Truth-up runs in CHUNKS so it doesn't monopolise the shared throttle and starve the
+  heartbeat.
 """
 
 from __future__ import annotations
@@ -36,9 +45,10 @@ _DUMMY_EDGE = FrozenEdge([0.0], 0).estimate()  # FixedFractionSizer ignores the 
 @dataclass(frozen=True, slots=True)
 class TickReport:
     fills: tuple[object, ...]
-    no_fills: dict[str, str]      # coin -> reason (capacity/staleness diagnostics)
+    no_fills: dict[str, str]      # coin -> reason (capacity diagnostics)
     stale_skipped: tuple[str, ...]
-    halted: bool = False          # signal stale (no recent poll) → traded nothing
+    halted: bool = False          # signal stale (no recent successful poll) → flatten only
+    frozen: tuple[str, ...] = ()  # OPEN positions that can't be managed (feed dead) — ALERT
 
 
 class FollowRunner:
@@ -46,23 +56,35 @@ class FollowRunner:
         self, watcher: WalletWatcher, weights: dict[str, float], universe: list[str],
         sizer: Sizer, executor: PaperExecutor, *, budget_usd: float,
         max_coin_frac: float = 0.08, staleness_ms: int = 30_000,
-        min_rebalance_usd: float = 20.0, heartbeat_ms: int = 600_000,
+        exit_staleness_ms: int = 300_000, min_rebalance_usd: float = 20.0,
+        heartbeat_ms: int = 1_200_000, flip_cooldown_ms: int = 300_000,
+        truthup_chunk: int = 20, equity_fn: Callable[[], float] | None = None,
     ) -> None:
+        if getattr(executor, "_mode", "retail") == "validator":
+            raise ValueError(
+                "validator executor needs a wallet_px feed not yet plumbed into FollowRunner; "
+                "use retail (the experiment's binding arm) until the wallet-px path exists")
         self._watcher = watcher
         self._weights = weights                 # frozen per-wallet Kelly weights (Σ≤1)
         self._universe = sorted(set(universe))
         self._sizer = sizer
         self._ex = executor
         self._budget = Decimal(str(budget_usd))
+        self._equity_fn = equity_fn             # mark-to-market equity; None → fixed budget
         self._max_coin = Decimal(str(max_coin_frac))
         self._staleness_ms = staleness_ms
+        self._exit_staleness_ms = exit_staleness_ms
         self._min_rebal = Decimal(str(min_rebalance_usd))
         self._heartbeat_ms = heartbeat_ms
+        self._flip_cooldown_ms = flip_cooldown_ms
+        self._truthup_chunk = max(1, truthup_chunk)
         self._books: dict[str, tuple[Book, int]] = {}
-        self._last_poll_ok: int | None = None   # heartbeat: last successful roster sweep
+        self._last_poll_mono: int | None = None   # heartbeat (MONOTONIC ms)
+        self._last_fill_wall: dict[str, int] = {}  # for flip hysteresis (WALL ms)
+        self._tu_cursor = 0
 
     def on_book(self, coin: str, book: Book, ts: int) -> None:
-        """Feed a live L2 book update (from the WS l2Book feed)."""
+        """Feed a live L2 book update; ``ts`` is the snapshot's EXCHANGE wall-clock ms."""
         self._books[coin] = (book, ts)
 
     @staticmethod
@@ -72,105 +94,151 @@ class FollowRunner:
             return None
         return (Decimal(str(bb)) + Decimal(str(ba))) / 2
 
+    def _budget_equity(self) -> Decimal:
+        if self._equity_fn is None:
+            return self._budget
+        return min(self._budget, Decimal(str(max(0.0, self._equity_fn()))))  # de-lever as equity bleeds
+
     def _target(self, coin: str, mark: Decimal) -> Decimal:
-        """Signed target position (coin units) from the edge-weighted consensus, capped
-        at max_coin_frac of budget."""
         consensus = self._watcher.consensus_sign(coin, self._weights)  # ∈ [-1, 1]
         if consensus == 0.0:
             return Decimal(0)
+        budget = self._budget_equity()
         raw = self._sizer.target_size(
-            edge=_DUMMY_EDGE, direction=consensus, budget_equity=self._budget, mark_price=mark)
-        cap = self._max_coin * self._budget / mark   # hard per-coin notional cap
-        if raw > cap:
-            return cap
-        if raw < -cap:
-            return -cap
-        return raw
+            edge=_DUMMY_EDGE, direction=consensus, budget_equity=budget, mark_price=mark)
+        cap = self._max_coin * budget / mark
+        return cap if raw > cap else (-cap if raw < -cap else raw)
 
-    def tick(self, now: int) -> TickReport:
-        """One trading tick: reconcile every universe coin's target vs net, fill the
-        deltas against the live book. Coins with a stale/absent book are skipped."""
-        # heartbeat halt: never trade a stale SIGNAL (poll loop dead / not yet started).
-        if self._last_poll_ok is None or now - self._last_poll_ok > self._heartbeat_ms:
-            return TickReport((), {}, tuple(self._universe), halted=True)
+    def tick(self, now_wall: int, now_mono: int) -> TickReport:
+        """One trading tick. Heartbeat halt (monotonic) → flatten-only; a stale book blocks
+        ENTRIES but a reduce-only EXIT is allowed within exit_staleness; a position with no
+        usable price is reported `frozen` (operator alert) rather than silently held."""
+        halted = self._last_poll_mono is None or now_mono - self._last_poll_mono > self._heartbeat_ms
         fills: list[object] = []
         no_fills: dict[str, str] = {}
         stale: list[str] = []
+        frozen: list[str] = []
         for coin in self._universe:
             bt = self._books.get(coin)
-            if bt is None or now - bt[1] > self._staleness_ms:
-                stale.append(coin)
-                continue
-            book, _ = bt
-            mark = self._mid(book)
-            if mark is None:
-                stale.append(coin)
-                continue
-            target = self._target(coin, mark)
+            book = bt[0] if bt is not None else None
+            age = (now_wall - bt[1]) if bt is not None else None
+            mark = self._mid(book) if book is not None else None
             current = self._ex.net_position(coin)
-            delta = target - current
-            if abs(delta) * mark < self._min_rebal:     # deadband (avoid churning dust)
+            entry_fresh = age is not None and age <= self._staleness_ms and not halted
+            # target: flatten on halt; on an entry-stale book only exit; else size normally
+            if halted or not entry_fresh:
+                if current == 0:
+                    stale.append(coin)
+                    continue
+                target = Decimal(0)                      # flatten the (orphaned) position
+            else:
+                target = self._target(coin, mark) if mark is not None else current
+            if mark is None:                             # no price → can't act on an open pos
+                frozen.append(coin) if current != 0 else stale.append(coin)
                 continue
-            order = Order(coin=coin, size=delta, price=None, reduce_only=False,
-                          tif=TimeInForce.IOC, cloid=f"{coin}-{now}")
-            fill, report = self._ex.submit_book(order, book, now)
+            delta = target - current
+            if abs(delta) * mark < self._min_rebal:
+                continue
+            reducing = abs(target) < abs(current)
+            if (halted or not entry_fresh):
+                # exit path: only reduce, only within the (looser) exit-staleness window
+                if not reducing or age is None or age > self._exit_staleness_ms:
+                    if current != 0:
+                        frozen.append(coin)
+                    continue
+            elif current != 0 and (target < 0) != (current < 0):
+                # flip hysteresis: don't reverse sign within the cooldown
+                if now_wall - self._last_fill_wall.get(coin, -10**18) < self._flip_cooldown_ms:
+                    continue
+            order = Order(coin=coin, size=delta, price=None, reduce_only=reducing,
+                          tif=TimeInForce.IOC, cloid=f"{coin}-{now_wall}")
+            assert book is not None  # guaranteed: mark is not None ⇒ book is not None
+            fill, report = self._ex.submit_book(order, book, now_wall)
             if fill is not None:
                 fills.append(fill)
+                self._last_fill_wall[coin] = now_wall
             elif not report.filled:
                 no_fills[coin] = report.no_fill_reason or "no fill"
-        return TickReport(tuple(fills), no_fills, tuple(stale))
+        if frozen:
+            log.error("tick.frozen_positions", coins=frozen)  # operator must intervene
+        return TickReport(tuple(fills), no_fills, tuple(stale), halted=halted, frozen=tuple(frozen))
 
-    async def poll(self, now_ms: int) -> None:
-        """One watcher sweep over the followed roster (run as a task on the same loop)."""
+    async def poll(self, now_wall: int, now_mono: int) -> int:
+        """One watcher sweep; the heartbeat refreshes ONLY if ≥1 wallet polled OK (a total
+        failure must not look fresh). Returns the success count."""
+        ok = 0
         for wallet in self._weights:
             try:
-                await self._watcher.poll_wallet(wallet, now_ms)
+                await self._watcher.poll_wallet(wallet, now_wall)
+                ok += 1
             except Exception as exc:  # noqa: BLE001 — per-wallet isolation (audit #7)
                 log.warning("poll.wallet_failed", wallet=wallet, error=str(exc))
-        self._last_poll_ok = now_ms      # heartbeat: the signal is fresh as of this sweep
+        if ok:
+            self._last_poll_mono = now_mono
+        else:
+            log.error("poll.total_failure", n=len(self._weights))
+        return ok
+
+    async def _truthup_chunk_step(self, now_wall: int) -> None:
+        """Truth-up a few wallets per cycle (chunked) so it doesn't monopolise the shared
+        throttle and starve the heartbeat."""
+        roster = list(self._weights)
+        if not roster:
+            return
+        chunk = roster[self._tu_cursor:self._tu_cursor + self._truthup_chunk]
+        self._tu_cursor = (self._tu_cursor + self._truthup_chunk) % len(roster)
+        for wallet in chunk:
+            try:
+                await self._watcher.truth_up(wallet)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("truthup.wallet_failed", wallet=wallet, error=str(exc))
 
     async def run(
-        self, now_fn: Callable[[], int], *, tick_s: float = 2.0, truthup_s: float = 300.0,
-        poll_pause_s: float = 1.0, stop: asyncio.Event | None = None,
+        self, now_wall_fn: Callable[[], int], now_mono_fn: Callable[[], int], *,
+        tick_s: float = 2.0, poll_pause_s: float = 1.0, truthup_every: int = 5,
+        stop: asyncio.Event | None = None,
     ) -> None:
-        """Drive the loop: a continuous poll sweep (throttled inside the watcher, with a
-        small inter-sweep pause) + periodic clearinghouse truth-up, concurrently with a
-        fixed-cadence trading tick. tick() is synchronous, so it reads a consistent
-        consensus snapshot between the poll's awaits (the watcher's per-wallet locks
-        protect _pos)."""
+        """Concurrent poll-loop (sweep + chunked truth-up) and trading tick-loop. Pass a
+        WALL-clock ms source and a MONOTONIC ms source. Any loop's exit sets `stop`, so a
+        crash tears down its sibling instead of leaving a zombie."""
         stop = stop or asyncio.Event()
         await asyncio.gather(
-            self._poll_loop(now_fn, truthup_s, poll_pause_s, stop),
-            self._tick_loop(now_fn, tick_s, stop),
+            self._poll_loop(now_wall_fn, now_mono_fn, poll_pause_s, truthup_every, stop),
+            self._tick_loop(now_wall_fn, now_mono_fn, tick_s, stop),
         )
 
-    async def _poll_loop(self, now_fn: Callable[[], int], truthup_s: float,
-                         poll_pause_s: float, stop: asyncio.Event) -> None:
-        last_tu = 0.0
-        while not stop.is_set():
-            now = now_fn()
-            if now - last_tu >= truthup_s * 1000:
+    async def _poll_loop(self, now_wall_fn: Callable[[], int], now_mono_fn: Callable[[], int],
+                         poll_pause_s: float, truthup_every: int, stop: asyncio.Event) -> None:
+        cycle = 0
+        try:
+            while not stop.is_set():
+                if cycle % max(1, truthup_every) == 0:
+                    await self._truthup_chunk_step(now_wall_fn())
+                await self.poll(now_wall_fn(), now_mono_fn())
+                cycle += 1
                 try:
-                    await self._watcher.truth_up_all()
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("truthup.failed", error=str(exc))
-                last_tu = now
-            await self.poll(now)
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=poll_pause_s)
-            except (TimeoutError, asyncio.TimeoutError):
-                pass
+                    await asyncio.wait_for(stop.wait(), timeout=poll_pause_s)
+                except (TimeoutError, asyncio.TimeoutError):
+                    pass
+        finally:
+            stop.set()  # tear down the sibling on any exit
 
-    async def _tick_loop(self, now_fn: Callable[[], int], tick_s: float,
-                         stop: asyncio.Event) -> None:
-        while not stop.is_set():
-            rep = self.tick(now_fn())
-            if rep.halted:
-                log.warning("tick.halted_stale_signal")
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=tick_s)
-            except (TimeoutError, asyncio.TimeoutError):
-                pass
+    async def _tick_loop(self, now_wall_fn: Callable[[], int], now_mono_fn: Callable[[], int],
+                         tick_s: float, stop: asyncio.Event) -> None:
+        try:
+            while not stop.is_set():
+                try:
+                    rep = self.tick(now_wall_fn(), now_mono_fn())
+                    if rep.halted:
+                        log.warning("tick.halted_stale_signal")
+                except Exception as exc:  # noqa: BLE001 — one bad tick must not kill the run
+                    log.error("tick.failed", error=str(exc))
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=tick_s)
+                except (TimeoutError, asyncio.TimeoutError):
+                    pass
+        finally:
+            stop.set()
 
 
 def book_from_l2(l2: L2Book, max_levels: int = 20) -> Book:
@@ -183,7 +251,10 @@ def book_from_l2(l2: L2Book, max_levels: int = 20) -> Book:
 
 
 def attach_l2_feed(runner: FollowRunner, feed: WebSocketFeed, universe: list[str]) -> None:
-    """Subscribe l2Book for the universe and pipe each snapshot into runner.on_book."""
+    """Subscribe l2Book for the universe and pipe each valid snapshot into runner.on_book.
+    Dropped (invalid) snapshots are counted per coin so a feed-integrity outage is visible,
+    not mistaken for a quiet market."""
+    drops: dict[str, int] = {}
     for coin in universe:
         feed.subscribe(Subscription(type="l2Book", coin=coin))
 
@@ -193,5 +264,9 @@ def attach_l2_feed(runner: FollowRunner, feed: WebSocketFeed, universe: list[str
         l2 = L2Book.from_ws(data)
         if l2.is_valid():
             runner.on_book(l2.coin, book_from_l2(l2), l2.time)
+        else:
+            drops[l2.coin] = drops.get(l2.coin, 0) + 1
+            if drops[l2.coin] % 25 == 0:
+                log.warning("feed.invalid_snapshots", coin=l2.coin, count=drops[l2.coin])
 
     feed.on("l2Book", _on_book)
