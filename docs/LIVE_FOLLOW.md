@@ -180,3 +180,188 @@ trade blind), periodic snapshot pruning + the forward-PnL report scheduler.
 3. Wire into the engine paper loop; `babylon follow-live` CLI (selection at T0,
    journal, run). 4. Live smoke (short run, real WS + real wallet polls). 5. Deploy
    long-running; periodic forward-PnL report through the gate.
+
+---
+
+# v3 ARCHITECTURE (post-investigation — the spec to audit & build)
+
+Supersedes v1/v2 design choices where they conflict. Reflects what the full
+backtest+audit investigation established. **This is the spec for the pre-build audit.**
+
+## v3.0 What the investigation actually established (the priors we build on)
+- **Real per-trade signal:** top-quintile (rolling-selected) wallets' positions, priced
+  on real L2 books OOS, carry +35-40bp gross directional return (front-loaded ~+7bp/hr
+  hrs 1-2). Confirmed look-ahead-free, not survivorship, not bid-ask-bounce, ~100%
+  capturable by a prompt follower. Well-sampled (thousands of trades).
+- **As a plain long-only DIRECTIONAL copy** (mirror wallet positions incl. their shorts;
+  NO basket hedge), retail-execution + taker cost: **Sharpe ~1.1, CAGR +34%, maxDD -19%**
+  (measured hourly correlation, fully costed, not look-ahead).
+- **NOT robust as market-neutral:** hedging out beta leaves thin/fragile alpha. The edge
+  carries alt-beta (regime exposure) — a property to MANAGE, not eliminate.
+- **Dead ends (do NOT build):** long-short "fade bad wallets" (their losses = their own
+  spread cost, uncapturable); recency-exposure-weighting (un-charged turnover); any
+  filter on REALIZED hold (look-ahead).
+- **Open questions only forward data resolves:** out-of-regime durability (84-day, one
+  up-alt regime), capacity (ZEC ~25% of PnL → concentration), and live execution quality.
+
+## v3.1 Strategy — DIRECTIONAL copy, concentration-capped
+- **Signal:** per coin, edge-weighted consensus of followed wallets' current net-position
+  SIGN (the existing `FollowStrategy.consensus_sign`). Mirror direction (long AND short
+  as the wallets hold). NO basket hedge (market-neutral was fragile; take the directional
+  bet, size it).
+- **Concentration cap (MANDATORY):** no single coin > `max_coin_frac` (e.g. 8%) of gross
+  book; no single wallet > `max_wallet_frac` of the consensus weight. ZEC at 25% is the
+  cardinal risk to neutralize. Cap via the sizer/reconciler.
+- **Sizing:** `FixedFractionSizer` (per-coin fraction × consensus), gross-capped by
+  NetRisk. NOT per-tick Kelly. Target a stated gross exposure (e.g. 1x) so the forward
+  Sharpe is interpretable.
+
+## v3.2 Selection — ROLLING, real-time-legal
+- Re-rank wallets by FOLLOWABLE skill (taker, conviction, neutralized, candle/L2-marked)
+  on a trailing TRAIN window (e.g. 30d); follow the top quintile on the next FOLLOW window
+  (e.g. 14d); roll. Selection uses only pre-window data (verified disjoint).
+- The roster updates at each roll. Recovery fingerprint must include the roster + T0 of
+  each sub-period (a re-rank is a new pre-registered sub-experiment, not a silent change).
+
+## v3.3 Ingestion — WalletWatcher (already built + audited)
+- Poll `userFillsByTime` (WS user-fills hard-capped at 10 users/IP → poll for the full
+  roster; WS only for the TEAM's low-latency execution path on the held subset).
+- `startPosition`-anchored net positions (self-correcting), `clearinghouseState` truth-up
+  (kills missed-close phantoms + cold-start seed), tid-dedup cursor, in-poll burst
+  pagination. (All audited; 5 bugs fixed.)
+- Weight-budgeted throttle (HL 1200 weight/min; userFillsByTime has per-item surcharge).
+- Per-wallet error isolation + heartbeat; halt-on-stale rather than trade blind.
+
+## v3.4 Execution — paper, with a configurable EXECUTION-QUALITY model
+- Paper mode: fill at the follower's achievable price. **Execution quality is a config knob**
+  spanning the realistic range we measured:
+  - `retail`: enter at mid+lag (60s-5min) + full taker cost (spread+9bp) + ~6bp entry impact.
+  - `validator` (the team's path): same/next-block entry ≈ wallet's price, maker-ish cost
+    (~3-5bp). Model both; report the edge under each so the result isn't execution-assumption-
+    dependent.
+- Charge fee + slippage + entry-impact IN the fill price (the engine path already does this;
+  do NOT double-subtract a separate cost). Depth/size-cap fills (thin alts). Funding accrual
+  on multi-hour holds.
+
+## v3.5 Measurement — the forward VALIDATION harness (the scientific core)
+- **This run exists to answer the OOS/regime/capacity questions the backtest could not.**
+- Gate on **per-round-trip realized return** (raw directional AND beta-decomposed), cost-
+  inclusive, from a FROZEN-sizing arm (no online edge re-fit contaminating the measure).
+- **Control arms in parallel** (random-skill + bottom-quintile rosters, same coins/window):
+  the claim is top − control, not top > 0 (controls for the regime/beta tail).
+- **Pre-registration:** one frozen config per sub-period; immutable `run_id = hash(T0,
+  roster, edges, config)`; restart is HARD-BLOCKED from re-selecting. Power-budget the
+  horizon (the per-trade edge is well-sampled, but the PORTFOLIO Sharpe needs months of
+  forward trades to tighten the CI past the 84-day backtest).
+- Track: realized Sharpe (with CI), maxDD, per-coin/per-wallet attribution (offline),
+  capacity proxy (fill slippage vs size), and the live latency distribution.
+
+## v3.6 Engineering & durability
+- State journal (SQLite): watcher net positions + engine ledger checkpointed at the SAME
+  snapshot cut; restore both consistently. Crash-recovery with fingerprint validation.
+- Staleness guard wired into the live loop (evict stale quotes; never trade/mark on stale).
+- Ops: supervisor (Restart=always), heartbeat, snapshot pruning, forward-PnL report
+  scheduler.
+
+## v3.7 Honest scope
+- This is a PAPER forward experiment to validate (or kill) the directional copy edge OOS,
+  measure capacity, and de-risk execution — BEFORE any capital. It is not a profit engine.
+- Success = top − control significantly positive over a power-budgeted horizon, net of
+  realistic cost, with manageable drawdown and capacity. Failure = it doesn't, and we
+  shelve with a clean OOS answer.
+
+---
+
+# v4 BINDING REVISIONS (from the 3-lens architecture audit — pre-build, MUST hold)
+
+The audits agreed: STRATEGY (v3.1, directional copy) is sound and rebuilds no dead-end.
+The EXPERIMENT DESIGN must change before any code, or the run repeats this
+investigation's own failure modes (false negative from underpower, false positive from
+forking paths / survivorship / contaminated controls).
+
+## v4.1 Re-point the question (what this run can and cannot answer)
+- **It CAN answer (narrow, trustworthy):** does skill-based wallet *selection* beat a
+  same-priced, eligible-pool control, OUT-OF-SAMPLE, in the forward regime, net of
+  realistic cost, depth-capped at a stated notional?
+- **It CANNOT answer on a months horizon:** portfolio Sharpe/CAGR/maxDD significance
+  (needs ~years), cross-regime durability (one regime), full-size capacity. These are
+  explicitly OUT OF SCOPE / descriptive only — never the headline or the gate.
+
+## v4.2 The gate (replaces v3.5's ambiguity)
+- **Primary metric:** per-round-trip **directional** (the deployed book; NOT neutralized),
+  cost-inclusive net return, **top − primary-control**, headline = retail execution at one
+  pinned lag bucket. Block-bootstrap 95% CI (block = follow window / overlapping-hold
+  cluster) on **EFFECTIVE n** (the ~63 concurrent positions on shared beta make nominal n
+  ≫ effective n).
+- **Primary control = top-quintile − MEAN-of-eligible-pool** (and a random-roster arm),
+  identically priced (same coins/lag/cost/caps → cost & beta cancel in the subtraction,
+  so the SIGNAL headline is execution-invariant). The pool-mean arm is decision-relevant:
+  if top ≈ pool-mean, the ranking is worthless (just follow everyone, cheaper/higher
+  capacity). **Drop top−bottom from the verdict** (bottom's gap is the bad wallets' own
+  execution cost — uncapturable — the +139bp ghost); keep only as a captioned diagnostic.
+- Add a **sign-shuffle placebo** (random direction, same coin/window) to bound "any
+  alt-long prints in an up regime."
+- Sharpe/CAGR/maxDD are **descriptive, labeled single-regime & underpowered** — they do
+  NOT drive go/no-go.
+
+## v4.3 Pre-registration (close the forking-paths garden — the meta-lesson of this whole study)
+Commit to an append-only registry BEFORE T0, then run blind to forward PnL until min-n:
+- **ONE fully-numeric primary config** — every "e.g." resolved: max_coin_frac,
+  max_wallet_frac, gross target, min_hold (selection only), train/follow lengths, the
+  single headline lag bucket, min_positions, beta, universe, eligible-pool definition,
+  control definition. **Retail execution is PRIMARY; validator is a labeled optimistic
+  upside bound, never the headline.**
+- **min-n** (nominal ≥1,500 round-trips AND an effective-n floor) **+ horizon cap ~9-12
+  months**; **no verdict read before min-n; no peeking** (or a pre-declared group-sequential
+  plan).
+- **Numeric GO / NO-GO / INCONCLUSIVE**: GO = CI lower bound ≥ MAR above cost floor
+  (e.g. +8-10bp net) AND top−control significant AND maxDD within bound AND depth-capped
+  edge survives at target notional AND no single wallet/coin > X% of the spread. NO-GO =
+  CI lb ≤ 0 OR top ≈ pool-mean OR cap kills it. INCONCLUSIVE = straddles MAR at horizon →
+  no capital (one pre-declared extension max).
+- **Commit the analysis-script hash**; one decision-maker reads ONCE against fixed thresholds.
+
+## v4.4 Clean-OOS hardening (the contamination the fingerprint must catch)
+- **`run_id = hash(T0, roster, per-wallet edge weights, full numeric config, per-wallet
+  train-cutoff tid)`** — replaces the engine's seed+"follow"-name fingerprint, which lets
+  a re-ranked roster resume silently. Restart HARD-BLOCKED from re-ranking; the roll
+  SCHEDULE is pre-committed (cron-auto), no human re-fit.
+- **Rolling seam:** train skill counts only round-trips **fully closed (incl. the lagged
+  exit candle) strictly < the follow-window start**; freeze the train data snapshot at
+  each T0 (no backfilled fills enter afterward); measure every forward round-trip from
+  **OUR own fill at/after T0**, never the wallet's earlier entry.
+- Charge **roster-churn turnover** at each roll (else it's the un-charged-turnover dead-end).
+
+## v4.5 Survivorship census (honest dead tail)
+Measure what a follower COMMITTED to the frozen roster at T0 actually earned, dead tail
+included: hold every wallet to window-end, count dormant/blow-up periods (flat or realized
+loss), never silently drop. Per-window census: N_followed / N_went_dark / N_blew_up /
+N_active_at_close + per-wallet contribution distribution (one survivor can't carry it).
+Pre-register a min-activity/min-history filter on the re-rank.
+
+## v4.6 Execution fidelity (so the forward number == the +35-40bp prior)
+- **Single cost source:** fold ALL cost (fee + spread + impact + slippage) into the
+  realized fill price; the round-trip measure subtracts NOTHING further; journal
+  `fee_e8`/`funding_e8` are report-only, never re-subtracted from a price-derived return.
+- **PaperExecutor parity with `fill_model`**: add an impact/slippage knob, a depth/size
+  cap, and a fill-price-source mode {live-touch | wallet-px (validator)} — or reuse
+  `fill_model.fill()` fed the L2 book. Pass `taker_fee_bps=4.5` EXPLICITLY (default 0 =
+  silent fee-blind bug). Pin the headline lag bucket.
+- **Capacity:** depth-walk the real L2 and size-cap at a pre-registered max fraction of
+  visible depth; report slippage-vs-size as the capacity proxy; run at a stated target
+  notional (+ a larger one for decay). Headline = depth-capped, retail-lag, at stated
+  notional (an UPPER bound; validator/same-block is more optimistic).
+
+## v4.7 Engineering must-haves (unbuilt; integration risk)
+- Watcher↔engine **atomic checkpoint** (engine holds the watcher, quiesces it via the
+  per-wallet locks at the snapshot instant, co-writes both journal parts; `truth_up_all()`
+  before the first post-restart tick).
+- **Weight-aware throttle** (debit the userFillsByTime per-20-item surcharge) + 429 backoff
+  on the watcher poll path; clarify the WS subset = ≤10 priority wallets (user-fills cap).
+- **Staleness guard** (timestamp every quote; per-tick eviction before marks; halt-on-stale
+  with a defined action). **Funding accrual** (periodic, material on multi-hour holds).
+  **Watcher heartbeat** the engine consults.
+- Per-coin cap via `RiskManager.clamp_target(per_asset_cap=…)` (no new logic); per-wallet
+  weight cap = clip+renormalize at selection (new selection-side code). Note: `FrozenEdge`
+  prior is INERT under `FixedFractionSizer` — edge enters only via consensus weights, not
+  size; don't assume edge-scaled sizing.
