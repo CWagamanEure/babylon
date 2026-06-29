@@ -29,13 +29,26 @@ ReturnsFn = Callable[[str, int], np.ndarray]
 CutoffFn = Callable[[str, int], int]
 
 
+def _sortino(r: np.ndarray) -> float:
+    """Sortino ratio = mean / downside-deviation — the empirically best OOS-predictive
+    selection statistic on our data: it keeps UPSIDE-tail magnitude (real signal for a
+    Kelly book) but penalizes DOWNSIDE dispersion (the blowup risk a follower inherits).
+    Beats median (tail-blind, worst OOS) and Sharpe (penalizes the good upside tail too).
+    Sign(Sortino)=sign(mean), so a selected wallet always gets positive Kelly weight."""
+    mu = float(r.mean())
+    dn = r[r < 0]
+    dd = float(np.sqrt(np.mean(dn * dn))) if dn.size else 0.0
+    return mu / dd if dd > 0 else mu * 1e6   # no losing round-trip → rank by mean, far up
+
+
 def select_roster(
     returns_by_wallet: dict[str, np.ndarray], cutoff_tids: dict[str, int], *,
     top_quintile_frac: float = 0.2, min_positions: int = 6, max_wallet_frac: float = 0.05,
     max_roster_size: int | None = None,
 ) -> tuple[list[str], dict[str, float], dict[str, int]]:
-    """Rank by median followable return, take the top `top_quintile_frac` (capped at
-    `max_roster_size`), weight by frozen fractional-Kelly. The cap keeps the roster small
+    """Rank by SORTINO of the followable return (mean/downside-deviation — the best
+    OOS-predictive statistic on our data; see _sortino), take the top `top_quintile_frac`
+    (capped at `max_roster_size`), weight by frozen fractional-Kelly. The cap keeps the roster small
     enough to POLL in real time under the HL rate limit — a huge roster can't be swept fast
     enough to detect position changes before the front-loaded edge decays. Returns
     (roster, weights, train_cutoff_tids)."""
@@ -43,7 +56,7 @@ def select_roster(
                 for w, r in returns_by_wallet.items() if len(r) >= min_positions}
     if not eligible:
         return [], {}, {}
-    ranked = sorted(eligible, key=lambda w: -float(np.median(eligible[w])))
+    ranked = sorted(eligible, key=lambda w: -_sortino(eligible[w]))
     q = max(1, int(len(ranked) * top_quintile_frac))
     if max_roster_size is not None:
         q = min(q, max_roster_size)

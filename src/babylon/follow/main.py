@@ -57,7 +57,7 @@ def locked_config(universe: list[str], *, execution: str = "retail") -> Experime
     return ExperimentConfig(
         execution=execution, universe_hash=universe_hash(universe),  # type: ignore[arg-type]
         eligible_pool="broad_study_pool", train_days=30, follow_days=14, roll_cadence_days=14,
-        min_hold_ms=3_600_000, min_positions=6, beta=1.245, gross_target=1.0,
+        min_hold_ms=3_600_000, min_positions=20, beta=1.245, gross_target=1.0,
         max_coin_frac=0.08, max_wallet_frac=0.05, also_run_uncapped=True, lag_bucket_ms=60_000,
         fee_bps=4.5, impact_bps=6.0, max_depth_frac=0.25, target_notional_usd=1_000.0,
         primary_control="pool_mean", secondary_controls=("random", "sign_shuffle"),

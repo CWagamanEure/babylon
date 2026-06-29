@@ -233,9 +233,11 @@ class FollowRunner:
             log.error("poll.total_failure", n=len(self._weights))
         return ok
 
-    async def _truthup_chunk_step(self, now_wall: int) -> None:
-        """Truth-up a few wallets per cycle (chunked) so it doesn't monopolise the shared
-        throttle and starve the heartbeat."""
+    async def _truthup_chunk_step(self, now_wall: int, now_mono: int) -> None:
+        """Truth-up a few wallets per cycle (chunked). Each successful truth-up ALSO
+        refreshes the heartbeat — it's a successful exchange interaction, so a long
+        rate-limited truth-up sweep no longer starves the heartbeat and flaps the book
+        (the audit's #5; observed as a halt→flatten→reopen churn live)."""
         roster = list(self._weights)
         if not roster:
             return
@@ -244,6 +246,7 @@ class FollowRunner:
         for wallet in chunk:
             try:
                 await self._watcher.truth_up(wallet)
+                self._last_poll_mono = now_mono
             except Exception as exc:  # noqa: BLE001
                 log.warning("truthup.wallet_failed", wallet=wallet, error=str(exc))
 
@@ -297,7 +300,7 @@ class FollowRunner:
         try:
             while not stop.is_set():
                 if cycle % max(1, truthup_every) == 0:
-                    await self._truthup_chunk_step(now_wall_fn())
+                    await self._truthup_chunk_step(now_wall_fn(), now_mono_fn())
                 await self.poll(now_wall_fn(), now_mono_fn(), stop)
                 cycle += 1
                 try:

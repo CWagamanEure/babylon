@@ -34,6 +34,19 @@ def test_select_ranks_top_quintile_and_weights():
     assert cutoffs == {"w0": 1000, "w1": 1001}          # seam tids carried for the roster only
 
 
+def test_select_ranks_by_sortino_penalizing_downside():
+    # two wallets, SAME mean, but B has fat DOWNSIDE dispersion → worse Sortino → ranked below.
+    # plus 8 filler wallets so there's a population to rank.
+    rng = np.random.default_rng(0)
+    rets = {f"f{i}": rng.normal(10, 30, 40) for i in range(8)}
+    rets["steady"] = np.array([20.0] * 20 + [10.0] * 20)              # mean 15, tiny downside
+    rets["blowup"] = np.array([120.0] * 20 + [-90.0] * 20)            # mean 15, big downside
+    roster, _, _ = select_roster(rets, {w: 1 for w in rets}, top_quintile_frac=0.2,
+                                 min_positions=6)
+    # steady (low downside) must outrank blowup (same mean, huge downside) → steady selected first
+    assert roster and roster[0] == "steady"
+
+
 def test_select_caps_roster_size():
     rets = {f"w{i}": _returns(i, 300 - i * 4) for i in range(40)}
     cuts = {f"w{i}": i for i in range(40)}
