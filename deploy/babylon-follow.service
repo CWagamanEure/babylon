@@ -1,0 +1,18 @@
+[Unit]
+Description=Babylon forward copy-trade paper experiment
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/bablyon
+# Resumes the committed roster from the registry on restart (no re-roll); the checkpoint
+# restores positions. The very first start rolls + registers the immutable manifest.
+ExecStart=/root/.local/bin/uv run python -m babylon.follow.main
+Restart=on-failure
+RestartSec=30
+StandardOutput=append:/root/bablyon/data/follow/live/run.log
+StandardError=append:/root/bablyon/data/follow/live/run.log
+
+[Install]
+WantedBy=multi-user.target
