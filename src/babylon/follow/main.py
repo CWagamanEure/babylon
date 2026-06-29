@@ -31,7 +31,7 @@ from babylon.exchange.rest import InfoClient
 from babylon.exchange.websocket import WebSocketFeed
 from babylon.follow.candles_source import fetch_lookups
 from babylon.follow.experiment import ExperimentConfig, Registry
-from babylon.follow.fills_source import RestFillsProvider
+from babylon.follow.fills_source import ParquetFillsProvider, RestFillsProvider
 from babylon.follow.followable import load_price_lookups
 from babylon.follow.live import LiveFollowSystem, wall_ms
 from babylon.follow.selection import SelectionAdapter
@@ -142,22 +142,29 @@ def main() -> None:
                     help="rank only the 281 in-sample winners (survivorship-tainted; NOT default)")
     ap.add_argument("--universe", type=Path, default=Path("data/follow/alt_universe.txt"))
     ap.add_argument("--candles", type=Path, default=Path("data/follow/candles"))
+    ap.add_argument("--fills-dir", type=Path, default=None,
+                    help="rank from LOCAL fills parquets + local candles (instant roll, no "
+                         "REST prefetch). Live positions + books are still real-time.")
     ap.add_argument("--state-dir", type=Path, default=Path("data/follow/live"))
     ap.add_argument("--budget", type=float, default=1000.0)
     ap.add_argument("--testnet", action="store_true")
     ap.add_argument("--dry-run", action="store_true",
-                    help="prefetch + initial roll only (pre-arm smoke), do not trade")
+                    help="prepare + initial roll only (pre-arm smoke), do not trade")
     a = ap.parse_args()
     a.state_dir.mkdir(parents=True, exist_ok=True)
     candidates = load_candidates(a.candidates, top_quintile_only=a.top_quintile_only)
     universe = load_universe(a.universe)
+    # local-selection mode: parquet fills + static local candles ⇒ no REST prefetch/refetch
+    local = dict(provider=ParquetFillsProvider(a.fills_dir), refresh_lookups=None) \
+        if a.fills_dir else {}
     log.info("live.start", n_candidates=len(candidates), n_universe=len(universe),
-             dry_run=a.dry_run, testnet=a.testnet)
+             dry_run=a.dry_run, testnet=a.testnet, local_fills=bool(a.fills_dir))
     asyncio.run(run_live(
         candidates=candidates, universe=universe, candles_dir=a.candles,
         network=Network.TESTNET if a.testnet else Network.MAINNET,
         registry_path=a.state_dir / "registry.jsonl",
-        checkpoint_path=a.state_dir / "checkpoint.json", budget_usd=a.budget, dry_run=a.dry_run))
+        checkpoint_path=a.state_dir / "checkpoint.json", budget_usd=a.budget,
+        dry_run=a.dry_run, **local))
 
 
 if __name__ == "__main__":

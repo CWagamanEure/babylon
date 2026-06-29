@@ -8,7 +8,10 @@ Type=simple
 WorkingDirectory=/root/bablyon
 # Resumes the committed roster from the registry on restart (no re-roll); the checkpoint
 # restores positions. The very first start rolls + registers the immutable manifest.
-ExecStart=/root/.local/bin/uv run python -m babylon.follow.main
+# --fills-dir: rank from local fills + candles (instant roll, no REST prefetch). Live
+# positions + books are still real-time. (Reroll freshness: refresh local fills before
+# the first 14-day reroll, or switch rerolls to REST.)
+ExecStart=/root/.local/bin/uv run python -m babylon.follow.main --fills-dir data/follow/fills
 Restart=on-failure
 RestartSec=30
 StandardOutput=append:/root/bablyon/data/follow/live/run.log
