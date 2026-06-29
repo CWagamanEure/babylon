@@ -185,6 +185,15 @@ def test_checkpoint_roundtrip():
     assert r2._last_poll_mono is None                  # resume forces a fresh poll first
 
 
+def test_adopt_roster_swaps_weights_and_watcher():
+    r, w, ex = _runner({"a": 1.0})
+    w._pos = {"a": {"ZEC": 5.0}}
+    r.adopt_roster({"b": 0.6, "c": 0.4}, since_ms=100)
+    assert r._weights == {"b": 0.6, "c": 0.4}
+    assert "b" in w._pos and "c" in w._pos and "a" not in w._pos   # watcher re-pointed
+    assert w._cursor["b"] == 100                                   # new wallet seeded fresh
+
+
 def test_book_from_l2():
     from babylon.data.models import L2Book
     l2 = L2Book.from_ws({"coin": "ZEC", "time": 5,

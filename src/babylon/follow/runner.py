@@ -93,6 +93,15 @@ class FollowRunner:
         """Feed a live L2 book update; ``ts`` is the snapshot's EXCHANGE wall-clock ms."""
         self._books[coin] = (book, ts)
 
+    def adopt_roster(self, weights: dict[str, float], *, since_ms: int) -> None:
+        """Adopt a re-ranked roster mid-run: swap the frozen weights and re-point the
+        watcher. The next tick reconciles each coin to the NEW edge-weighted consensus
+        (deadband + flip hysteresis dampen the transition churn). Synchronous, called
+        between ticks so the swap is atomic w.r.t. the consensus read."""
+        self._weights = weights
+        self._watcher.update_roster(list(weights), since_ms=since_ms)
+        log.info("runner.roster_adopted", n=len(weights))
+
     @staticmethod
     def _mid(book: Book) -> Decimal | None:
         bb, ba = book.best_bid, book.best_ask

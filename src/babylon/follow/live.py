@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,6 +31,9 @@ from babylon.sizing.sizer import FixedFractionSizer
 
 log = get_logger("follow.live")
 
+# (wallets, start_ms, end_ms) -> awaitable that loads those wallets' fills for the roll
+PrefetchFn = Callable[[list[str], int, int], Awaitable[None]]
+
 
 def wall_ms() -> int:
     """Book-staleness clock: wall-clock UNIX ms, matching the exchange book timestamps."""
@@ -41,6 +45,9 @@ def mono_ms() -> int:
     return int(time.monotonic() * 1000)
 
 
+_DAY_MS = 86_400_000
+
+
 @dataclass(slots=True)
 class LiveFollowSystem:
     config: ExperimentConfig
@@ -49,6 +56,11 @@ class LiveFollowSystem:
     feed: WebSocketFeed
     run_id: str
     checkpoint_path: Path
+    scheduler: RollScheduler
+    candidates: list[str]
+    t0_ms: int
+    prefetch: PrefetchFn | None = None   # async fills prefetch before a (re)roll
+    reset: Callable[[], None] | None = None  # drop the selection fetch cache between rolls
 
     @classmethod
     def build(
@@ -56,6 +68,7 @@ class LiveFollowSystem:
         source: FillSource, feed: WebSocketFeed, returns_fn: ReturnsFn, cutoff_fn: CutoffFn,
         t0_ms: int, budget_usd: float, registry_path: Path, checkpoint_path: Path,
         analysis_script_hash: str, poll_interval_s: float = 1.05,
+        prefetch: PrefetchFn | None = None, reset: Callable[[], None] | None = None,
     ) -> LiveFollowSystem:
         config.validate()
         registry = Registry(registry_path)
@@ -72,12 +85,28 @@ class LiveFollowSystem:
         if checkpoint_path.exists():
             runner.from_state(json.loads(checkpoint_path.read_text()))
             log.info("live.resumed", run_id=run_id, checkpoint=str(checkpoint_path))
-        return cls(config, registry, runner, feed, run_id, checkpoint_path)
+        return cls(config, registry, runner, feed, run_id, checkpoint_path, scheduler,
+                   list(candidates), t0_ms, prefetch, reset)
 
-    async def run(self, *, stop: asyncio.Event | None = None,
-                  tick_s: float = 2.0, checkpoint_every: int = 30) -> None:
-        """Run the WS feed and the trading loop concurrently under one stop. The locked
-        clocks are passed here; the feed is torn down when the runner exits."""
+    async def reroll(self, t0_ms: int) -> str:
+        """Roll the next sub-period (§v4.4): prefetch the fresh train window, re-rank,
+        register the new immutable manifest, and adopt the new roster into the running
+        loop. Returns the new run_id."""
+        if self.prefetch is not None:
+            await self.prefetch(self.candidates, t0_ms - self.config.train_days * _DAY_MS, t0_ms)
+        if self.reset is not None:
+            self.reset()
+        _roster, weights, run_id = self.scheduler.roll(t0_ms)
+        self.runner.adopt_roster(weights, since_ms=t0_ms)
+        self.run_id = run_id
+        self.t0_ms = t0_ms
+        return run_id
+
+    async def run(self, *, stop: asyncio.Event | None = None, tick_s: float = 2.0,
+                  checkpoint_every: int = 30, roll_check_s: float = 3600.0) -> None:
+        """Run the WS feed, the trading loop, and the roll-cadence loop concurrently under
+        one stop. The locked clocks are passed here; the feed is torn down when the runner
+        exits."""
         stop = stop or asyncio.Event()
 
         async def _drive() -> None:
@@ -87,5 +116,24 @@ class LiveFollowSystem:
                     checkpoint_every=checkpoint_every, stop=stop)
             finally:
                 self.feed.stop()
+                stop.set()
 
-        await asyncio.gather(self.feed.run(), _drive())
+        await asyncio.gather(self.feed.run(), _drive(), self._roll_loop(stop, roll_check_s))
+
+    async def _roll_loop(self, stop: asyncio.Event, check_s: float) -> None:
+        cadence_ms = self.config.roll_cadence_days * _DAY_MS
+        next_roll = self.t0_ms + cadence_ms
+        try:
+            while not stop.is_set():
+                if wall_ms() >= next_roll:
+                    try:
+                        await self.reroll(next_roll)
+                    except Exception as exc:  # noqa: BLE001 — a failed roll must not kill the run
+                        log.error("reroll.failed", t0_ms=next_roll, error=str(exc))
+                    next_roll += cadence_ms
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=check_s)
+                except (TimeoutError, asyncio.TimeoutError):
+                    pass
+        finally:
+            stop.set()

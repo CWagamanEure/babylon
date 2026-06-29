@@ -45,16 +45,16 @@ class _Feed:
         await self._stop.wait()
 
 
-def _build(tmp_path, **over):
+def _build(tmp_path, *, cfg=None, t0_ms=10_000, prefetch=None, reset=None, **over):
     # 120 candidates → top quintile ~24 wallets → weights sum to ~1 (realistic consensus)
     cands = [f"w{i}" for i in range(120)]
     rets = {w: np.random.default_rng(i).normal(300 - i, 20, 60) for i, w in enumerate(cands)}
     return LiveFollowSystem.build(
-        config=_cfg(), candidates=cands, universe=["ZEC"], source=_Src(), feed=_Feed(),
+        config=cfg or _cfg(), candidates=cands, universe=["ZEC"], source=_Src(), feed=_Feed(),
         returns_fn=lambda w, t: rets[w], cutoff_fn=lambda w, t: 1000,
-        t0_ms=10_000, budget_usd=1000.0, registry_path=tmp_path / "reg.jsonl",
+        t0_ms=t0_ms, budget_usd=1000.0, registry_path=tmp_path / "reg.jsonl",
         checkpoint_path=tmp_path / "ckpt.json", analysis_script_hash="ah",
-        poll_interval_s=0.0, **over)
+        poll_interval_s=0.0, prefetch=prefetch, reset=reset, **over)
 
 
 def test_build_rolls_and_registers(tmp_path):
@@ -99,6 +99,34 @@ def test_checkpoint_and_resume(tmp_path):
     sys2 = _build(tmp_path)
     assert sys2.runner._ex.net_position("ZEC") == pos
     assert sys2.runner._last_poll_mono is None                # resume forces a fresh poll
+
+
+def test_reroll_registers_new_manifest_and_adopts(tmp_path):
+    calls = {"prefetch": 0, "reset": 0}
+    async def prefetch(wallets, s, e): calls["prefetch"] += 1
+    sys = _build(tmp_path, prefetch=prefetch, reset=lambda: calls.__setitem__("reset", 1))
+    rid1 = sys.run_id
+    rid2 = asyncio.run(sys.reroll(t0_ms=20_000))               # next sub-period
+    assert rid2 != rid1 and sys.t0_ms == 20_000
+    assert sys.registry.committed(20_000) is not None          # new immutable manifest
+    assert calls["prefetch"] == 1 and calls["reset"] == 1      # fresh train fetch + cache reset
+    assert sys.runner._weights                                  # roster adopted into the runner
+
+
+def test_roll_loop_fires_at_cadence(tmp_path):
+    calls = {"n": 0}
+    async def prefetch(wallets, s, e): calls["n"] += 1
+    t0 = wall_ms() - int(1.5 * 86_400_000)                     # 1.5 days ago, 1-day cadence
+    sys = _build(tmp_path, cfg=_cfg(roll_cadence_days=1), t0_ms=t0, prefetch=prefetch)
+    for wlt in list(sys.runner._weights):
+        sys.runner._watcher._pos[wlt] = {"ZEC": 5.0}
+    async def drive():
+        stop = asyncio.Event()
+        task = asyncio.create_task(sys.run(stop=stop, tick_s=0.005, roll_check_s=0.005))
+        await asyncio.sleep(0.08); stop.set()
+        await asyncio.wait_for(task, timeout=2.0)
+    asyncio.run(drive())
+    assert calls["n"] >= 1                                      # the cadence loop rerolled
 
 
 def test_async_run_smoke(tmp_path):

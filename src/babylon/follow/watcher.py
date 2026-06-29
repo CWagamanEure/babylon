@@ -171,6 +171,24 @@ class WalletWatcher:
             self._cursor[w] = since_ms
             self._boundary_tids[w] = set()
 
+    def update_roster(self, wallets: list[str], *, since_ms: int = 0) -> None:
+        """Adopt a re-ranked roster mid-run (§v4.4 roll seam). NEW wallets start flat
+        (cursor=since_ms) until a poll/truth-up loads their real position — so the
+        consensus under-counts a new name briefly rather than trading it blind; CONTINUING
+        wallets keep their tracked state; DROPPED wallets are purged."""
+        keep = set(wallets)
+        for w in wallets:
+            if w not in self._pos:
+                self._pos[w] = {}
+                self._cursor[w] = since_ms
+                self._boundary_tids[w] = set()
+                self._lock[w] = asyncio.Lock()
+        for w in [w for w in self._pos if w not in keep]:
+            for d in (self._pos, self._cursor, self._boundary_tids, self._lock,
+                      self._last_detect):
+                d.pop(w, None)
+        self._wallets = list(wallets)
+
     # --- durability --------------------------------------------------------
 
     def to_state(self) -> dict[str, Any]:
