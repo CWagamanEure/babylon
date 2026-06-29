@@ -391,8 +391,16 @@ dead-feed (reduce-only exit), truth-up heartbeat starvation (chunked), clock con
 weights cap provably correct (200k-fuzz) + unit-safe; submit_book bit-exact with the
 backtest fill model.
 
-**Remaining to ARM (real-data wiring + ops, no new core logic):**
-1. Inject the three real adapters: HL info source (watcher), live `WebSocketFeed` URL,
-   and a `FillsProvider` (REST userFillsByTime or cached parquet) for `SelectionAdapter`.
-2. Lock the `ExperimentConfig` at T0 (approved numbers) + candidate pool + 187-coin universe.
-3. Deploy to the droplet, smoke under real load, then start.
+**Real-data adapters + rolling re-rank — DONE.** `InfoClient` satisfies the watcher's
+`FillSource`; `WebSocketFeed` is the l2Book feed; `fills_source.py` adds `RestFillsProvider`
+(async prefetch + sync read, paginated past the 2000 cap) / `ParquetFillsProvider`. Mid-run
+re-roll wired: `watcher.update_roster` + `runner.adopt_roster` + `LiveFollowSystem.reroll`/
+`_roll_loop` (biweekly cadence, registers a new immutable manifest + adopts live).
+
+**Remaining to ARM (ops/config + one small glue `main()`, no new core logic):**
+1. `main()`: instantiate `InfoClient` + `WebSocketFeed` + `RestFillsProvider` +
+   `SelectionAdapter`, load candle lookups + the candidate pool + 187-coin universe, lock the
+   `ExperimentConfig` at T0, then `LiveFollowSystem.build(... prefetch=provider.prefetch,
+   reset=adapter.reset)` + `run()`.
+2. Deploy to the droplet, smoke under real load, then start. (Candidate pool + exact T0 are
+   user decisions.)
