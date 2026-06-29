@@ -24,9 +24,13 @@ Hardened against the run-loop audit's failure modes:
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
+from typing import Any
 
 from babylon.core import Order, TimeInForce
 from babylon.data.models import L2Book
@@ -82,6 +86,8 @@ class FollowRunner:
         self._last_poll_mono: int | None = None   # heartbeat (MONOTONIC ms)
         self._last_fill_wall: dict[str, int] = {}  # for flip hysteresis (WALL ms)
         self._tu_cursor = 0
+        self._cash = Decimal(str(budget_usd))     # paper cash; fills book their cashflow
+        self._funding_pnl = Decimal(0)            # cumulative funding carry (in cash already)
 
     def on_book(self, coin: str, book: Book, ts: int) -> None:
         """Feed a live L2 book update; ``ts`` is the snapshot's EXCHANGE wall-clock ms."""
@@ -94,10 +100,34 @@ class FollowRunner:
             return None
         return (Decimal(str(bb)) + Decimal(str(ba))) / 2
 
+    def equity(self) -> Decimal:
+        """Mark-to-market paper equity = cash + Σ position·mark (funding already in cash).
+        Coins with no usable mark are valued at cost (their cash impact is already booked)."""
+        eq = self._cash
+        for coin in self._ex.net_positions():
+            bt = self._books.get(coin)
+            mark = self._mid(bt[0]) if bt is not None else None
+            if mark is not None:
+                eq += self._ex.net_position(coin) * mark
+        return eq
+
     def _budget_equity(self) -> Decimal:
-        if self._equity_fn is None:
-            return self._budget
-        return min(self._budget, Decimal(str(max(0.0, self._equity_fn()))))  # de-lever as equity bleeds
+        eq = self._equity_fn() if self._equity_fn is not None else float(self.equity())
+        return min(self._budget, Decimal(str(max(0.0, eq))))  # de-lever as equity bleeds
+
+    def accrue_funding(self, rates: dict[str, float]) -> None:
+        """Apply one funding period: a long pays `rate` of its notional when rate>0, a
+        short receives. Books into cash so equity/sizing reflect the carry (material on
+        the multi-hour/day holds these wallets take)."""
+        for coin, pos in self._ex.net_positions().items():
+            bt = self._books.get(coin)
+            mark = self._mid(bt[0]) if bt is not None else None
+            rate = rates.get(coin)
+            if mark is None or rate is None:
+                continue
+            cost = pos * mark * Decimal(str(rate))   # signed: long·+rate = pays (cash down)
+            self._cash -= cost
+            self._funding_pnl -= cost
 
     def _target(self, coin: str, mark: Decimal) -> Decimal:
         consensus = self._watcher.consensus_sign(coin, self._weights)  # ∈ [-1, 1]
@@ -156,6 +186,7 @@ class FollowRunner:
             fill, report = self._ex.submit_book(order, book, now_wall)
             if fill is not None:
                 fills.append(fill)
+                self._cash -= fill.size * fill.price   # book the cashflow (buy↓ / sell↑)
                 self._last_fill_wall[coin] = now_wall
             elif not report.filled:
                 no_fills[coin] = report.no_fill_reason or "no fill"
@@ -193,9 +224,38 @@ class FollowRunner:
             except Exception as exc:  # noqa: BLE001
                 log.warning("truthup.wallet_failed", wallet=wallet, error=str(exc))
 
+    def to_state(self) -> dict[str, Any]:
+        return {
+            "watcher": self._watcher.to_state(), "net": self._ex.to_state(),
+            "cash": str(self._cash), "funding_pnl": str(self._funding_pnl),
+            "last_fill_wall": dict(self._last_fill_wall),
+            "last_poll_mono": self._last_poll_mono, "tu_cursor": self._tu_cursor,
+        }
+
+    def from_state(self, st: dict[str, Any]) -> None:
+        self._watcher.from_state(st["watcher"])
+        self._ex.from_state(st["net"])
+        self._cash = Decimal(st["cash"])
+        self._funding_pnl = Decimal(st["funding_pnl"])
+        self._last_fill_wall = {k: int(v) for k, v in st["last_fill_wall"].items()}
+        self._last_poll_mono = None   # force a fresh poll (heartbeat) before trading on resume
+        self._tu_cursor = int(st["tu_cursor"])
+
+    def checkpoint(self, path: Path) -> None:
+        """Atomic durable snapshot (temp → fsync → rename). A CONSISTENT cut: called
+        synchronously from the tick loop, and tick() has no awaits, so the watcher _pos
+        and the executor net are captured at the same instant (no poll mid-mutation)."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(self.to_state()))
+        with tmp.open("rb+") as f:
+            os.fsync(f.fileno())
+        tmp.rename(path)
+
     async def run(
         self, now_wall_fn: Callable[[], int], now_mono_fn: Callable[[], int], *,
         tick_s: float = 2.0, poll_pause_s: float = 1.0, truthup_every: int = 5,
+        checkpoint_path: Path | None = None, checkpoint_every: int = 30,
         stop: asyncio.Event | None = None,
     ) -> None:
         """Concurrent poll-loop (sweep + chunked truth-up) and trading tick-loop. Pass a
@@ -204,7 +264,8 @@ class FollowRunner:
         stop = stop or asyncio.Event()
         await asyncio.gather(
             self._poll_loop(now_wall_fn, now_mono_fn, poll_pause_s, truthup_every, stop),
-            self._tick_loop(now_wall_fn, now_mono_fn, tick_s, stop),
+            self._tick_loop(now_wall_fn, now_mono_fn, tick_s, checkpoint_path,
+                            checkpoint_every, stop),
         )
 
     async def _poll_loop(self, now_wall_fn: Callable[[], int], now_mono_fn: Callable[[], int],
@@ -224,13 +285,18 @@ class FollowRunner:
             stop.set()  # tear down the sibling on any exit
 
     async def _tick_loop(self, now_wall_fn: Callable[[], int], now_mono_fn: Callable[[], int],
-                         tick_s: float, stop: asyncio.Event) -> None:
+                         tick_s: float, checkpoint_path: Path | None, checkpoint_every: int,
+                         stop: asyncio.Event) -> None:
+        n = 0
         try:
             while not stop.is_set():
                 try:
                     rep = self.tick(now_wall_fn(), now_mono_fn())
                     if rep.halted:
                         log.warning("tick.halted_stale_signal")
+                    n += 1
+                    if checkpoint_path is not None and n % max(1, checkpoint_every) == 0:
+                        self.checkpoint(checkpoint_path)
                 except Exception as exc:  # noqa: BLE001 — one bad tick must not kill the run
                     log.error("tick.failed", error=str(exc))
                 try:

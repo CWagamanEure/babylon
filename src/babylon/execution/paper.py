@@ -37,6 +37,12 @@ class PaperExecutor:
         self._maker_bps = float(maker_cost_bps)      # validator-arm cost at the wallet price
         self._net: dict[str, Decimal] = defaultdict(lambda: Decimal(0))
 
+    def to_state(self) -> dict[str, str]:
+        return {c: str(s) for c, s in self._net.items() if s != 0}
+
+    def from_state(self, st: dict[str, str]) -> None:
+        self._net = defaultdict(lambda: Decimal(0), {c: Decimal(s) for c, s in st.items()})
+
     def net_position(self, coin: str) -> Decimal:
         return self._net[coin]
 

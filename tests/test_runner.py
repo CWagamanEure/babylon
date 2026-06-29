@@ -136,7 +136,7 @@ def test_flip_hysteresis_gates_fast_reversal():
     assert ex.net_position("ZEC") == Decimal("0.5")
     r.on_book("ZEC", _book(100.0), ts=400_000)
     r.tick(now_wall=400_000, now_mono=400_000)          # past cooldown → reverses
-    assert ex.net_position("ZEC") == Decimal("-0.5")
+    assert abs(ex.net_position("ZEC") - Decimal("-0.5")) < Decimal("0.01")  # ~-0.5 (MTM equity)
 
 
 def test_mtm_equity_de_levers():
@@ -148,6 +148,41 @@ def test_mtm_equity_de_levers():
     eq["v"] = 500.0                                     # equity halves → target halves
     r.on_book("ZEC", _book(100.0), ts=2); r.tick(2, 2)
     assert ex.net_position("ZEC") == full / 2
+
+
+def test_equity_tracks_cash_plus_marks():
+    r, w, ex = _runner({"a": 1.0})
+    assert r.equity() == Decimal("1000")              # all cash at start
+    w._pos = {"a": {"ZEC": 5.0}}
+    r.on_book("ZEC", _book(100.0), ts=1); r.tick(1, 1)
+    # cash dropped by the buy notional; equity = cash + 0.5·mid ≈ budget − the ~bp cost
+    assert Decimal("999") < r.equity() < Decimal("1000")
+
+
+def test_funding_accrual_long_pays():
+    r, w, ex = _runner({"a": 1.0})
+    w._pos = {"a": {"ZEC": 5.0}}
+    r.on_book("ZEC", _book(100.0), ts=1); r.tick(1, 1)
+    cash0 = r._cash
+    r.accrue_funding({"ZEC": 0.0001})                 # +1bp funding → long pays
+    cost = Decimal("0.5") * Decimal("100") * Decimal("0.0001")  # pos·mark·rate
+    assert r._cash == cash0 - cost and r._funding_pnl == -cost
+
+
+def test_checkpoint_roundtrip():
+    import json
+    import tempfile
+    r, w, ex = _runner({"a": 1.0})
+    w._pos = {"a": {"ZEC": 5.0}}
+    r.on_book("ZEC", _book(100.0), ts=1); r.tick(1, 1)
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        path = __import__("pathlib").Path(f.name)
+    r.checkpoint(path)
+    r2, w2, ex2 = _runner({"a": 1.0})
+    r2.from_state(json.loads(path.read_text()))
+    assert ex2.net_position("ZEC") == ex.net_position("ZEC")  # book restored
+    assert r2._cash == r._cash and r2._funding_pnl == r._funding_pnl
+    assert r2._last_poll_mono is None                  # resume forces a fresh poll first
 
 
 def test_book_from_l2():
