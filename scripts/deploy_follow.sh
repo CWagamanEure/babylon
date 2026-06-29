@@ -15,7 +15,7 @@ SSH="ssh -i $KEY -o StrictHostKeyChecking=accept-new"
 echo ">>> [1/3] syncing code -> $DROPLET:$DEST"
 rsync -az --delete -e "$SSH" \
   --exclude '.venv' --exclude '.git' --exclude '__pycache__' --exclude '*.pyc' \
-  --exclude 'data' --exclude '.pytest_cache' --exclude '.mypy_cache' --exclude '.ruff_cache' \
+  --exclude '/data' --exclude '.pytest_cache' --exclude '.mypy_cache' --exclude '.ruff_cache' \
   ./ "$DROPLET:$DEST/"
 
 echo ">>> [2/3] syncing experiment data (pool + universe + candles, ~17MB)"
