@@ -16,11 +16,17 @@ import numpy as np
 
 
 def _kelly_proportional(returns: np.ndarray, fractional: float) -> float:
-    """SNR-shrunk fractional-Kelly proportional weight for one wallet's round-trip
-    return series (in any consistent unit). 0 if no positive edge."""
+    """SNR-shrunk inverse-variance edge weight for one wallet's round-trip return series.
+    0 if no positive demonstrated edge or any non-finite value.
+
+    NOTE on `fractional`: it scales the raw value uniformly across wallets, so it CANCELS
+    in the Σ=1 renormalization — it does NOT change the relative weights. Absolute risk
+    (over-betting) is governed by the FixedFractionSizer + caps, not here. It is kept only
+    to document the quarter-Kelly intent. The surviving relative weight is
+    ``shrink·(μ/σ²)`` (renormalization also makes it scale-invariant in the return unit)."""
     a = np.asarray(returns, dtype=np.float64)
-    if a.size < 2:
-        return 0.0
+    if a.size < 2 or not np.isfinite(a).all():
+        return 0.0  # too few obs, or corrupt data → drop the wallet
     mu = float(a.mean())
     var = float(a.var())
     if var <= 0.0 or mu <= 0.0:
@@ -31,11 +37,13 @@ def _kelly_proportional(returns: np.ndarray, fractional: float) -> float:
 
 
 def _cap_normalize(raw: dict[str, float], max_frac: float) -> dict[str, float]:
-    """Normalize to Σ=1 with every weight ≤ max_frac (water-fill: cap the wallets that
-    exceed max_frac, redistribute the freed mass to the rest, repeat)."""
+    """Weights ≤ max_frac each. Σ=1 when the roster is large enough to respect the cap
+    (≥ 1/max_frac wallets); for a THIN roster the cap binds on everyone and the sum is
+    < 1 (n·max_frac) — reduced consensus conviction, a deliberate signal that the book is
+    under-diversified. The cap is NEVER violated (unlike a naive equal-weight fallback)."""
     if len(raw) * max_frac < 1.0 - 1e-9:
-        # cap infeasible (too few wallets to sum to 1 under it) → equal weight
-        return {w: 1.0 / len(raw) for w in raw}
+        # cap infeasible for Σ=1 → cap everyone at max_frac (Σ < 1, lower conviction)
+        return {w: max_frac for w in raw}
     capped: dict[str, float] = {}
     free = dict(raw)
     fixed_total = 0.0
@@ -58,8 +66,10 @@ def kelly_weights(
     returns_by_wallet: dict[str, np.ndarray], *,
     fractional: float = 0.25, max_frac: float = 0.05,
 ) -> dict[str, float]:
-    """Frozen per-wallet consensus weights (Σ=1), each ≤ max_frac. Wallets with no
-    positive demonstrated edge get zero weight (and are dropped from the roster)."""
+    """Frozen per-wallet consensus weights, each ≤ max_frac. Σ=1 for a normal roster;
+    Σ < 1 (reduced conviction) only for a thin roster of < 1/max_frac wallets, where the
+    cap binds on all. Wallets with no positive demonstrated edge (or corrupt data) get
+    zero weight and are dropped from the roster."""
     raw = {w: f for w, r in returns_by_wallet.items()
            if (f := _kelly_proportional(r, fractional)) > 0.0}
     if not raw:

@@ -47,6 +47,13 @@ def test_validator_requires_wallet_px():
     assert f is None and not rep.filled
 
 
+def test_validator_rejects_stale_wallet_px():
+    ex = PaperExecutor(mode="validator")
+    # book mid ~99.5; a garbage wallet_px=50 deviates >5% -> no fictional fill
+    f, rep = ex.submit_book(_order(15), _book(), now=1, wallet_px=Decimal("50"))
+    assert f is None and not rep.filled and ex.net_position("ZEC") == Decimal(0)
+
+
 def test_sell_side_cost_direction():
     ex = PaperExecutor(taker_fee_bps=4.5, mode="retail", impact_bps=6.0, max_depth_frac=0.9)
     f, _ = ex.submit_book(_order(-15), _book(), now=1)   # sell walks the bid

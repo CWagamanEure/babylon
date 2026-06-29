@@ -81,6 +81,11 @@ class PaperExecutor:
         if self._mode == "validator":
             if wallet_px is None or wallet_px <= 0:
                 return None, FillReport(False, 0.0, "validator mode needs wallet_px")
+            # sanity band: a stale/garbage wallet_px must not fill at a fictional price.
+            mid = (Decimal(str(book.best_bid)) + Decimal(str(book.best_ask))) / 2 \
+                if book.best_bid and book.best_ask else None
+            if mid is not None and abs(wallet_px - mid) / mid > Decimal("0.05"):
+                return None, FillReport(False, 0.0, "wallet_px deviates >5% from book mid")
             worsen = Decimal(str(self._maker_bps)) / Decimal(10_000)
             price = wallet_px * (Decimal(1) + worsen) if order.is_buy else wallet_px * (Decimal(1) - worsen)
             self._net[order.coin] += order.size

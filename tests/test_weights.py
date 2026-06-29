@@ -33,12 +33,19 @@ def test_cap_binds_and_normalizes():
     assert w["whale"] == max(w.values())  # still the largest, just capped
 
 
-def test_few_wallets_equal_weight_when_cap_infeasible():
+def test_thin_roster_respects_cap_with_reduced_conviction():
     rng = np.random.default_rng(3)
     w = kelly_weights({"a": rng.normal(30, 150, 100), "b": rng.normal(20, 150, 100)},
                       max_frac=0.05)  # 2 wallets can't sum to 1 at 5% each
-    assert abs(sum(w.values()) - 1.0) < 1e-9
-    assert all(abs(v - 0.5) < 1e-9 for v in w.values())
+    assert all(v <= 0.05 + 1e-12 for v in w.values())     # cap NEVER violated
+    assert abs(sum(w.values()) - 0.10) < 1e-9             # Σ < 1: reduced conviction
+
+
+def test_nan_returns_dropped():
+    rng = np.random.default_rng(4)
+    bad = rng.normal(30, 150, 100); bad[5] = np.nan
+    w = kelly_weights({"good": rng.normal(30, 150, 100), "corrupt": bad})
+    assert "corrupt" not in w and "good" in w
 
 
 def test_empty_and_no_edge():

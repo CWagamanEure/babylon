@@ -1,11 +1,11 @@
 """Pre-registration harness for the forward copy-trade paper experiment.
 
 Encodes docs/LIVE_FOLLOW.md §v4.3/4.4: ONE immutable numeric config + an immutable
-run_id + a pre-committed numeric decision rule + an append-only registry. The point is
-that this forward run cannot be re-litigated the way the backtest investigation was —
-every knob is fixed before T0, the team runs blind to PnL until min-n, and the verdict
-is read ONCE against fixed thresholds. A re-ranked roster cannot silently resume because
-the run_id hashes the roster + per-wallet train-cutoff tid + config.
+run_id + a pre-committed numeric decision rule + an append-only, hash-chained registry
+and decision log. The point is that this forward run cannot be re-litigated the way the
+backtest investigation was — every knob is fixed before T0, the team runs blind to PnL
+until min-n, and the verdict is read ONCE against fixed thresholds, with both the config
+binding and the read-once property ENFORCED (not honor-system).
 
 The gate is on the DIRECTIONAL (deployed) per-round-trip top−control return — NOT the
 portfolio Sharpe (underpowered on a months horizon) and NOT the neutralized series
@@ -16,12 +16,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
 Execution = Literal["retail", "validator"]
 Decision = Literal["GO", "NO_GO", "INCONCLUSIVE"]
+_GENESIS = "0" * 64
+
+
+def _sha(s: str) -> str:
+    return hashlib.sha256(s.encode()).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,36 +36,33 @@ class ExperimentConfig:
     """Every knob resolved to a number BEFORE T0. `retail` execution is the binding
     primary; `validator` is a labeled optimistic upside bound, never the headline."""
 
-    # selection / strategy
     execution: Execution
-    universe_hash: str           # sha256 of the sorted alt universe (locks the coin set)
-    eligible_pool: str           # control-pool definition, e.g. "longhold_taker_conviction"
+    universe_hash: str
+    eligible_pool: str
     train_days: int
     follow_days: int
     roll_cadence_days: int
     min_hold_ms: int             # SELECTION skill only — never filters the live copy
     min_positions: int
     beta: float                  # diagnostic neutralization ratio (gate is directional)
-    # sizing / risk
     gross_target: float
     max_coin_frac: float
     max_wallet_frac: float
-    also_run_uncapped: bool      # report the capped vs uncapped "concentration premium"
-    # execution / measurement
+    also_run_uncapped: bool
     lag_bucket_ms: int           # the SINGLE headline lag
-    fee_bps: float               # 4.5 taker, folded into the fill price
-    impact_bps: float            # entry-impact slippage (retail), folded into the fill price
-    max_depth_frac: float        # depth cap (capacity realism)
+    fee_bps: float
+    impact_bps: float
+    max_depth_frac: float
     target_notional_usd: float
-    # controls / power / decision rule
     primary_control: str         # "pool_mean"
-    secondary_controls: tuple[str, ...]   # ("random", "sign_shuffle")
-    min_n_nominal: int           # nominal round-trips per arm before any verdict
-    min_effective_n: int         # block-bootstrap effective-n floor
-    horizon_cap_days: int        # hard calendar cap
+    secondary_controls: tuple[str, ...]
+    min_n_nominal: int
+    min_effective_n: int
+    horizon_cap_days: int
     mar_bps: float               # minimum acceptable net return (above cost floor) for GO
-    maxdd_bound: float           # e.g. -0.25 (negative)
-    max_single_contrib_frac: float  # no single wallet/coin may supply > this of the spread
+    maxdd_bound: float           # negative
+    max_single_contrib_frac: float
+    cost_floor_bps: float        # the realistic round-trip cost; MAR must clear it
 
     def validate(self) -> None:
         assert self.execution in ("retail", "validator")
@@ -70,112 +74,184 @@ class ExperimentConfig:
         assert 0 < self.max_depth_frac <= 1 and self.target_notional_usd > 0
         assert self.primary_control == "pool_mean", "primary control must be the pool-mean null"
         assert self.min_n_nominal >= 1 and self.min_effective_n >= 1
+        assert self.min_effective_n <= self.min_n_nominal, "effective-n floor cannot exceed nominal"
         assert self.horizon_cap_days > 0
-        assert self.maxdd_bound < 0 and 0 < self.max_single_contrib_frac <= 1
-        assert self.mar_bps > 0
+        assert self.maxdd_bound < 0
+        assert 0 < self.max_single_contrib_frac < 1, "concentration gate must be < 100%"
+        assert len(self.secondary_controls) >= 1, "need ≥1 falsification control"
+        assert math.isfinite(self.beta)
+        # economic floor: a GO must clear realistic cost by a real margin
+        assert self.cost_floor_bps >= 0 and self.mar_bps >= 1.0, "MAR must be a real ≥1bp margin"
 
     def canonical(self) -> str:
         d = asdict(self)
-        d["secondary_controls"] = list(self.secondary_controls)
-        return json.dumps(d, sort_keys=True, separators=(",", ":"))
+        d["secondary_controls"] = sorted(self.secondary_controls)
+        return json.dumps(d, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
     def hash(self) -> str:
-        return hashlib.sha256(self.canonical().encode()).hexdigest()
+        return _sha(self.canonical())
 
 
 @dataclass(frozen=True, slots=True)
 class RunManifest:
     """Frozen at each sub-period's T0. The run_id is the experiment's identity; a
-    re-ranked roster or any config change produces a different run_id, so a contaminated
-    resume cannot masquerade as the pre-registered run."""
+    re-ranked roster or any config change produces a different run_id. Built FROM a
+    validated config (config_hash recomputed internally, not trusted as input)."""
 
     t0_ms: int
-    roster: tuple[str, ...]              # sorted wallet addresses (the frozen follow set)
-    edge_weights: dict[str, float]       # wallet -> consensus weight (capped, renormalized)
-    train_cutoff_tids: dict[str, int]    # wallet -> last train-window tid (rolling-seam guard)
+    roster: tuple[str, ...]
+    edge_weights: dict[str, float]
+    train_cutoff_tids: dict[str, int]
     config_hash: str
     analysis_script_hash: str
+
+    def validate(self) -> None:
+        assert self.roster, "empty roster"
+        assert set(self.roster) == set(self.edge_weights) == set(self.train_cutoff_tids), \
+            "roster / weights / tids must cover the same wallets"
+        for w in self.edge_weights.values():
+            assert math.isfinite(w) and w >= 0, "weights must be finite, non-negative"
+
+    @classmethod
+    def build(cls, *, t0_ms: int, edge_weights: dict[str, float],
+              train_cutoff_tids: dict[str, int], config: ExperimentConfig,
+              analysis_script_hash: str) -> RunManifest:
+        config.validate()
+        m = cls(t0_ms=t0_ms, roster=tuple(sorted(edge_weights)), edge_weights=dict(edge_weights),
+                train_cutoff_tids=dict(train_cutoff_tids), config_hash=config.hash(),
+                analysis_script_hash=analysis_script_hash)
+        m.validate()
+        return m
 
     def canonical(self) -> str:
         return json.dumps(
             {
                 "t0_ms": self.t0_ms,
-                "roster": list(self.roster),
+                "roster": sorted(self.roster),
                 "edge_weights": {k: self.edge_weights[k] for k in sorted(self.edge_weights)},
                 "train_cutoff_tids": {
                     k: self.train_cutoff_tids[k] for k in sorted(self.train_cutoff_tids)},
                 "config_hash": self.config_hash,
                 "analysis_script_hash": self.analysis_script_hash,
             },
-            sort_keys=True, separators=(",", ":"),
+            sort_keys=True, separators=(",", ":"), allow_nan=False,
         )
 
     def run_id(self) -> str:
-        return "run_" + hashlib.sha256(self.canonical().encode()).hexdigest()[:24]
+        return "run_" + _sha(self.canonical())[:24]
+
+
+def _append_chained(path: Path, payload: dict[str, object]) -> str:
+    """Append a hash-chained record under an exclusive lock. Returns the record hash."""
+    import fcntl
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            f.seek(0)
+            lines = [ln for ln in f.read().splitlines() if ln.strip()]
+            prev = json.loads(lines[-1])["rec_hash"] if lines else _GENESIS
+            body = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            rec_hash = _sha(prev + body)
+            f.write(json.dumps({"prev": prev, "rec_hash": rec_hash, "body": body},
+                               sort_keys=True) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+            return rec_hash
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def _read_chained(path: Path) -> list[dict[str, object]]:
+    """Read + verify the hash chain; raise if tampered. Returns the parsed bodies."""
+    if not path.exists():
+        return []
+    out: list[dict[str, object]] = []
+    prev = _GENESIS
+    for ln in path.read_text().splitlines():
+        if not ln.strip():
+            continue
+        rec = json.loads(ln)
+        if rec["prev"] != prev or _sha(prev + rec["body"]) != rec["rec_hash"]:
+            raise ValueError(f"registry chain broken at {rec.get('rec_hash')}: tampered")
+        out.append(json.loads(rec["body"]))
+        prev = rec["rec_hash"]
+    return out
 
 
 class Registry:
-    """Append-only on-disk registry. register() commits a manifest; verify_resume()
-    refuses to start if the live manifest differs from the committed one for that T0 —
-    blocking a silent re-rank. Pre-commit the whole roll SCHEDULE; only the cron-auto roll
-    may add a new sub-period manifest, never a human re-fit."""
+    """Append-only, hash-chained registry. register() commits a manifest under a lock;
+    every read re-derives the run_id from the stored manifest and verifies the chain, so
+    a hand-edited manifest or a silent re-rank is detected. One manifest per T0."""
 
     def __init__(self, path: Path) -> None:
         self._path = path
 
-    def _read(self) -> list[dict[str, object]]:
-        if not self._path.exists():
-            return []
-        return [json.loads(line) for line in self._path.read_text().splitlines() if line.strip()]
+    def _committed(self, t0_ms: int) -> RunManifest | None:
+        hits = []
+        for body in _read_chained(self._path):
+            man = body["manifest"]
+            assert isinstance(man, dict)
+            m = RunManifest(
+                t0_ms=man["t0_ms"], roster=tuple(man["roster"]),
+                edge_weights=man["edge_weights"], train_cutoff_tids=man["train_cutoff_tids"],
+                config_hash=man["config_hash"], analysis_script_hash=man["analysis_script_hash"])
+            if m.run_id() != body["run_id"]:
+                raise ValueError(
+                    f"stored run_id {body['run_id']} != re-derived {m.run_id()}: tampered")
+            if m.t0_ms == t0_ms:
+                hits.append(m)
+        if len(hits) > 1:
+            raise ValueError(f"multiple committed manifests for T0={t0_ms}: corrupt registry")
+        return hits[0] if hits else None
 
-    def committed(self, t0_ms: int) -> dict[str, object] | None:
-        for rec in self._read():
-            if rec["t0_ms"] == t0_ms:
-                return rec
-        return None
+    def committed(self, t0_ms: int) -> RunManifest | None:
+        return self._committed(t0_ms)
 
     def register(self, manifest: RunManifest) -> str:
+        manifest.validate()
         rid = manifest.run_id()
-        existing = self.committed(manifest.t0_ms)
+        existing = self._committed(manifest.t0_ms)
         if existing is not None:
-            if existing["run_id"] != rid:
+            if existing.run_id() != rid:
                 raise ValueError(
-                    f"T0={manifest.t0_ms} already committed as {existing['run_id']}; "
-                    f"refusing to overwrite with {rid} (a re-rank/config change). "
-                    "Pre-registration is immutable.")
-            return rid  # idempotent re-register of the identical manifest
-        rec = {"run_id": rid, "t0_ms": manifest.t0_ms, "config_hash": manifest.config_hash,
-               "analysis_script_hash": manifest.analysis_script_hash,
-               "manifest": manifest.canonical()}
-        with self._path.open("a") as f:
-            f.write(json.dumps(rec, sort_keys=True) + "\n")
+                    f"T0={manifest.t0_ms} already committed as {existing.run_id()}; "
+                    f"refusing {rid} (a re-rank/config change). Pre-registration is immutable.")
+            return rid
+        _append_chained(self._path, {
+            "run_id": rid,
+            "manifest": json.loads(manifest.canonical()),
+        })
         return rid
 
     def verify_resume(self, manifest: RunManifest) -> None:
-        """Raise unless this manifest is exactly the one committed for its T0 (blocks a
-        silent re-rank resuming as the pre-registered run)."""
-        existing = self.committed(manifest.t0_ms)
+        existing = self._committed(manifest.t0_ms)
         if existing is None:
-            raise ValueError(f"no committed run for T0={manifest.t0_ms}; cannot resume an "
-                             "un-pre-registered run")
-        if existing["run_id"] != manifest.run_id():
+            raise ValueError(f"no committed run for T0={manifest.t0_ms}; cannot resume")
+        if existing.run_id() != manifest.run_id():
             raise ValueError("live manifest != committed manifest for this T0 — a re-rank or "
                              "config drift. Refusing to resume (clean-OOS contract).")
 
 
 @dataclass(frozen=True, slots=True)
 class Results:
-    """The measured inputs to the decision rule (computed by the pre-committed analysis
-    script from realized fill prices only)."""
+    """Measured inputs to the decision rule, computed by the pre-committed analysis script
+    from realized fill prices only. n's are reported but the gate RECOMPUTES min-n."""
 
-    reached_min_n: bool          # nominal AND effective-n floors met
     n_effective: int
+    n_nominal: int
     top_minus_control_ci_low: float    # bps, block-bootstrap 95%
     top_minus_control_ci_high: float
-    top_vs_poolmean_significant: bool  # top significantly beats the pool-mean null
-    maxdd: float                 # negative
-    depth_capped_survives: bool  # edge survives at target notional under the depth cap
+    top_vs_poolmean_significant: bool
+    maxdd: float
+    depth_capped_survives: bool
     max_single_contrib_frac: float
+
+    def validate(self) -> None:
+        assert self.top_minus_control_ci_low <= self.top_minus_control_ci_high, "inverted CI"
+        assert self.n_effective >= 0 and self.n_nominal >= 0
+        for x in (self.top_minus_control_ci_low, self.top_minus_control_ci_high, self.maxdd):
+            assert math.isfinite(x)
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,14 +260,42 @@ class Verdict:
     reasons: tuple[str, ...]
 
 
-def decide(cfg: ExperimentConfig, r: Results) -> Verdict:
-    """The pre-committed numeric rule (§v4.3). Read ONCE, after min-n, against these
-    fixed thresholds. INCONCLUSIVE defaults to NO capital."""
-    if not r.reached_min_n:
-        return Verdict("INCONCLUSIVE", ("min-n not reached — no verdict may be read (no peeking)",))
+def decide(
+    cfg: ExperimentConfig, r: Results, *, registry: Registry, run_id: str,
+    decision_log: Path, results_hash: str,
+) -> Verdict:
+    """The pre-committed numeric rule (§v4.3), ENFORCED: the config is verified against the
+    committed run, min-n is RECOMPUTED (not trusted), and the read is logged READ-ONCE in a
+    hash-chained decision log — a second post-min-n read for the same run is refused, so the
+    verdict cannot be peeked/optional-stopped or have its thresholds lowered post-hoc."""
+    r.validate()
+    # 1. bind cfg to the committed run (no post-hoc threshold tweaking)
+    committed = next((m for m in (registry.committed(t) for t in _t0s(registry))
+                      if m and m.run_id() == run_id), None)
+    if committed is None:
+        raise ValueError(f"run_id {run_id} not in the registry — cannot decide an "
+                         "un-pre-registered run")
+    if cfg.hash() != committed.config_hash:
+        raise ValueError("cfg does not match the committed config_hash — refusing "
+                         "(post-hoc threshold change)")
+    # 2. recompute the min-n gate from the measured n's (don't trust a self-reported bool)
+    if r.n_nominal < cfg.min_n_nominal or r.n_effective < cfg.min_effective_n:
+        _log_read(decision_log, run_id, results_hash, "INCONCLUSIVE")
+        return Verdict("INCONCLUSIVE", (
+            f"min-n not reached (nominal {r.n_nominal}/{cfg.min_n_nominal}, "
+            f"effective {r.n_effective}/{cfg.min_effective_n}) — no verdict (no peeking)",))
+    # 3. read-once: refuse a second post-min-n read for this run
+    for body in _read_chained(decision_log):
+        if body["run_id"] == run_id and body["verdict"] != "INCONCLUSIVE":
+            raise ValueError(f"run {run_id} already has a final verdict {body['verdict']} "
+                             "logged — read-once: refusing a second read")
+    v = _rule(cfg, r)
+    _log_read(decision_log, run_id, results_hash, v.decision)
+    return v
 
+
+def _rule(cfg: ExperimentConfig, r: Results) -> Verdict:
     reasons: list[str] = []
-    # hard NO-GO conditions
     if r.top_minus_control_ci_high <= 0:
         reasons.append("top−control CI entirely ≤ 0: no edge")
     if not r.top_vs_poolmean_significant:
@@ -205,13 +309,23 @@ def decide(cfg: ExperimentConfig, r: Results) -> Verdict:
                        f"spread (> {cfg.max_single_contrib_frac:.0%} cap)")
     if reasons:
         return Verdict("NO_GO", tuple(reasons))
-
-    # GO requires the CI lower bound to clear the MAR above the cost floor
     if r.top_minus_control_ci_low >= cfg.mar_bps:
         return Verdict("GO", (
             f"top−control CI lower bound +{r.top_minus_control_ci_low:.1f}bp ≥ MAR "
             f"+{cfg.mar_bps:.1f}bp; beats pool-mean; survives depth cap; DD within bound",))
-    # CI straddles the MAR at the horizon → underpowered, not a pass
     return Verdict("INCONCLUSIVE", (
         f"CI lower bound +{r.top_minus_control_ci_low:.1f}bp < MAR +{cfg.mar_bps:.1f}bp "
         "(straddles): underpowered, NOT a pass → no capital",))
+
+
+def _t0s(registry: Registry) -> list[int]:
+    out = []
+    for b in _read_chained(registry._path):  # noqa: SLF001
+        man = b["manifest"]
+        assert isinstance(man, dict)
+        out.append(int(man["t0_ms"]))
+    return out
+
+
+def _log_read(path: Path, run_id: str, results_hash: str, verdict: str) -> None:
+    _append_chained(path, {"run_id": run_id, "results_hash": results_hash, "verdict": verdict})
