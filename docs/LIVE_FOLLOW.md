@@ -365,3 +365,34 @@ Pre-register a min-activity/min-history filter on the re-rank.
   weight cap = clip+renormalize at selection (new selection-side code). Note: `FrozenEdge`
   prior is INERT under `FixedFractionSizer` — edge enters only via consensus weights, not
   size; don't assume edge-scaled sizing.
+
+---
+
+## §v5 AS-BUILT (forward paper experiment — complete, audited, durable)
+
+All five build steps are implemented, tested (65 follow tests), adversarially audited, and
+hardened. Module map (`src/babylon/follow/` unless noted):
+
+| concern | module | key surface |
+|---|---|---|
+| Pre-registration | `experiment.py` | `ExperimentConfig` (frozen, hash-bound), `RunManifest.build`, hash-chained tamper-evident `Registry`, read-once `decide()` |
+| Per-wallet weights | `weights.py` | `kelly_weights` (SNR-shrunk inverse-variance, water-fill cap, thin-roster cap-respect) |
+| Parity executor | `execution/paper.py` | `submit_book` (depth-walk VWAP, cost-in-price), `to_state`/`from_state` |
+| Live run loop | `runner.py` | `FollowRunner` (two-clock, success-gated heartbeat, isolated loops, reduce-only dead-feed exit, flip hysteresis, chunked truth-up, MTM equity, funding, checkpoint), `attach_l2_feed` |
+| Rolling re-rank | `scheduler.py` | `select_roster`, `RollScheduler.roll` (registers each sub-period's immutable manifest) |
+| Measurement | `measure.py` | `measure` → `Results` → `decide`; block-bootstrap CI, effective-n, maxDD, concentration; `RollingEdgeMonitor` (observe-only) |
+| Selection adapter | `selection.py` + `followable.followable_returns` | real fills → `returns_fn`/`cutoff_fn` (directional, seam-guarded) |
+| Entrypoint | `live.py` | `LiveFollowSystem.build`/`run`; locks `wall_ms()`/`mono_ms()` clock contract |
+
+**Run-loop audit (3-lens) outcomes, all fixed:** heartbeat-fresh-on-total-poll-failure
+(CRITICAL), unisolated-tick zombie (HIGH), validator dead-arm (fail-fast), can't-flatten-
+dead-feed (reduce-only exit), truth-up heartbeat starvation (chunked), clock contract
+(two clocks). Verified-correct claims: tick() is await-free ⇒ atomic consensus snapshot;
+weights cap provably correct (200k-fuzz) + unit-safe; submit_book bit-exact with the
+backtest fill model.
+
+**Remaining to ARM (real-data wiring + ops, no new core logic):**
+1. Inject the three real adapters: HL info source (watcher), live `WebSocketFeed` URL,
+   and a `FillsProvider` (REST userFillsByTime or cached parquet) for `SelectionAdapter`.
+2. Lock the `ExperimentConfig` at T0 (approved numbers) + candidate pool + 187-coin universe.
+3. Deploy to the droplet, smoke under real load, then start.
