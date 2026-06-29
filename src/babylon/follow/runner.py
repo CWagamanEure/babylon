@@ -308,9 +308,18 @@ class FollowRunner:
                     rep = self.tick(now_wall_fn(), now_mono_fn())
                     if rep.halted:
                         log.warning("tick.halted_stale_signal")
+                    if rep.fills:
+                        log.info("tick.fills", n=len(rep.fills),
+                                 coins=sorted({getattr(f, "coin", "?") for f in rep.fills}))
                     n += 1
-                    if checkpoint_path is not None and n % max(1, checkpoint_every) == 0:
-                        self.checkpoint(checkpoint_path)
+                    if n % max(1, checkpoint_every) == 0:
+                        # periodic status (operability): is the feed alive, are we trading?
+                        log.info("tick.status", n=n, books=len(self._books),
+                                 stale=len(rep.stale_skipped), positions=len(self._ex.net_positions()),
+                                 equity=round(float(self.equity()), 2), halted=rep.halted,
+                                 frozen=len(rep.frozen))
+                        if checkpoint_path is not None:
+                            self.checkpoint(checkpoint_path)
                 except Exception as exc:  # noqa: BLE001 — one bad tick must not kill the run
                     log.error("tick.failed", error=str(exc))
                 try:
