@@ -94,15 +94,24 @@ def test_heartbeat_only_fresh_on_poll_success():
     assert ok == 0 and r._last_poll_mono is None and r.tick(2, 2).halted
 
 
-def test_halt_flattens_open_position():
+def test_stale_signal_holds_position():
+    r, w, ex = _runner({"a": 1.0})                      # heartbeat 1.2M, dead 3.6M (defaults)
+    w._pos = {"a": {"ZEC": 5.0}}
+    r.on_book("ZEC", _book(100.0), ts=1); r.tick(now_wall=1, now_mono=0)
+    assert ex.net_position("ZEC") == Decimal("0.5")
+    r.on_book("ZEC", _book(100.0), ts=2)
+    rep = r.tick(now_wall=2, now_mono=1_300_000)        # > heartbeat, < dead → HOLD
+    assert rep.halted and ex.net_position("ZEC") == Decimal("0.5")  # held, not flattened
+
+
+def test_dead_signal_flattens_position():
     r, w, ex = _runner({"a": 1.0})
     w._pos = {"a": {"ZEC": 5.0}}
-    r.on_book("ZEC", _book(100.0), ts=1); r.tick(1, 1)
+    r.on_book("ZEC", _book(100.0), ts=1); r.tick(now_wall=1, now_mono=0)
     assert ex.net_position("ZEC") == Decimal("0.5")
-    r._last_poll_mono = None                            # signal dies → halt
-    r.on_book("ZEC", _book(100.0), ts=2)               # but the book is fresh
-    rep = r.tick(2, 5_000_000)                          # mono way past heartbeat
-    assert rep.halted and ex.net_position("ZEC") == Decimal(0)  # reduce-only flatten
+    r.on_book("ZEC", _book(100.0), ts=2)
+    rep = r.tick(now_wall=2, now_mono=5_000_000)        # > dead_ms → flatten
+    assert rep.halted and ex.net_position("ZEC") == Decimal(0)
 
 
 def test_stale_book_allows_exit_within_window():

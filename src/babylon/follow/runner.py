@@ -65,6 +65,7 @@ class FollowRunner:
         exit_staleness_ms: int = 300_000, min_rebalance_usd: float = 20.0,
         heartbeat_ms: int = 1_200_000, flip_cooldown_ms: int = 300_000,
         truthup_chunk: int = 20, equity_fn: Callable[[], float] | None = None,
+        dead_ms: int = 3_600_000,
     ) -> None:
         if getattr(executor, "_mode", "retail") == "validator":
             raise ValueError(
@@ -82,6 +83,7 @@ class FollowRunner:
         self._exit_staleness_ms = exit_staleness_ms
         self._min_rebal = Decimal(str(min_rebalance_usd))
         self._heartbeat_ms = heartbeat_ms
+        self._dead_ms = max(dead_ms, heartbeat_ms)   # ≥ heartbeat; flatten only when truly dead
         self._flip_cooldown_ms = flip_cooldown_ms
         self._truthup_chunk = max(1, truthup_chunk)
         self._books: dict[str, tuple[Book, int]] = {}
@@ -151,11 +153,17 @@ class FollowRunner:
         return cap if raw > cap else (-cap if raw < -cap else raw)
 
     def tick(self, now_wall: int, now_mono: int) -> TickReport:
-        """One trading tick. Heartbeat halt (monotonic) → flatten-only; a stale book blocks
-        ENTRIES but a reduce-only EXIT is allowed within exit_staleness; a position with no
-        usable price is reported `frozen` (operator alert) rather than silently held."""
-        halted = (self._last_poll_mono is None
-                  or now_mono - self._last_poll_mono > self._heartbeat_ms)
+        """One trading tick. TWO-TIER signal staleness (monotonic): a STALE signal (no poll
+        within heartbeat_ms — e.g. a transient rate-limit blip) HOLDS the book (stop opening,
+        don't churn); only a DEAD signal (no poll within dead_ms) flattens. A stale BOOK blocks
+        that coin's entries but allows a reduce-only exit; an unmanageable position is `frozen`."""
+        elapsed = (now_mono - self._last_poll_mono) if self._last_poll_mono is not None else None
+        stale_signal = elapsed is None or elapsed > self._heartbeat_ms
+        dead = elapsed is not None and elapsed > self._dead_ms
+        if stale_signal and not dead:
+            # transient outage → HOLD existing positions, place nothing (no flatten churn)
+            return TickReport((), {}, tuple(self._universe), halted=True)
+        halted = dead
         fills: list[object] = []
         no_fills: dict[str, str] = {}
         stale: list[str] = []
