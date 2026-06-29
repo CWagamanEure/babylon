@@ -34,7 +34,12 @@ class SelectionAdapter:
         self._cfg = config
         self._basket = basket          # None ⇒ directional (the gated measure)
         self._train_ms = config.train_days * _DAY_MS
-        self._cache: dict[tuple[str, int], pl.DataFrame] = {}
+        # SINGLE-entry cache: returns_fn + cutoff_fn for the SAME wallet share one read,
+        # then it's evicted — so a roll holds ONE wallet's fills at a time, not all 1404
+        # (the whole pool at once OOMs a small box). Requires the scheduler to process a
+        # wallet's returns + cutoff consecutively.
+        self._cache_key: tuple[str, int] | None = None
+        self._cache_df: pl.DataFrame | None = None
 
     def set_lookups(self, lookups: dict[str, tuple[np.ndarray, np.ndarray]]) -> None:
         """Swap in fresh candle lookups for the next roll (live multi-month runs)."""
@@ -42,9 +47,11 @@ class SelectionAdapter:
 
     def _df(self, wallet: str, t0_ms: int) -> pl.DataFrame:
         key = (wallet, t0_ms)
-        if key not in self._cache:                 # one fetch serves returns_fn + cutoff_fn
-            self._cache[key] = self._fp(wallet, t0_ms - self._train_ms, t0_ms)
-        return self._cache[key]
+        if key != self._cache_key:                 # evict the previous wallet (bound memory)
+            self._cache_df = self._fp(wallet, t0_ms - self._train_ms, t0_ms)
+            self._cache_key = key
+        assert self._cache_df is not None
+        return self._cache_df
 
     def returns_fn(self, wallet: str, t0_ms: int) -> np.ndarray:
         df = self._df(wallet, t0_ms)
@@ -67,4 +74,5 @@ class SelectionAdapter:
 
     def reset(self) -> None:
         """Drop the per-roll fetch cache (call between rolls so a new T0 re-fetches)."""
-        self._cache.clear()
+        self._cache_key = None
+        self._cache_df = None

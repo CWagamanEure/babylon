@@ -67,8 +67,13 @@ class RollScheduler:
         immutable manifest, and return (roster, weights, run_id) for the runner to adopt.
         Idempotent for an identical re-selection; a different selection at the same T0 is
         refused by the registry (immutable pre-registration)."""
-        returns = {w: self._returns_fn(w, t0_ms) for w in self._candidates}
-        cutoffs = {w: self._cutoff_fn(w, t0_ms) for w in self._candidates}
+        # process each wallet's returns + cutoff consecutively so a single-entry adapter
+        # cache holds ONE wallet's fills at a time (the whole pool at once OOMs a small box)
+        returns: dict[str, np.ndarray] = {}
+        cutoffs: dict[str, int] = {}
+        for w in self._candidates:
+            returns[w] = self._returns_fn(w, t0_ms)
+            cutoffs[w] = self._cutoff_fn(w, t0_ms)
         roster, weights, cut = select_roster(
             returns, cutoffs, top_quintile_frac=self._tqf,
             min_positions=self._config.min_positions, max_wallet_frac=self._config.max_wallet_frac)
