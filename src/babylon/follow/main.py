@@ -74,7 +74,8 @@ def load_candidates(path: Path, *, top_quintile_only: bool = False) -> list[str]
 
 
 def load_universe(path: Path) -> list[str]:
-    return [ln.strip() for ln in path.read_text().splitlines() if ln.strip()]
+    return [s for ln in path.read_text().splitlines()
+            if (s := ln.strip()) and not s.startswith("#")]   # skip blanks + # comments
 
 
 async def run_live(

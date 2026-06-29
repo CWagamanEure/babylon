@@ -41,8 +41,8 @@ def test_load_candidates_full_and_top_quintile(tmp_path):
 
 def test_load_universe(tmp_path):
     p = tmp_path / "u.txt"
-    p.write_text("BTC\nETH\n\n SOL \n")
-    assert load_universe(p) == ["BTC", "ETH", "SOL"]
+    p.write_text("# a comment\nBTC\nETH\n\n SOL \n# another\n")
+    assert load_universe(p) == ["BTC", "ETH", "SOL"]   # comments + blanks skipped
 
 
 # --- dry-run orchestration (no network, no loop) ---
