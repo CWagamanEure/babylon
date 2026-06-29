@@ -83,6 +83,7 @@ async def run_live(
     candles_dir: Path | None = None, network: Network = Network.MAINNET,
     budget_usd: float = 1000.0, execution: str = "retail", dry_run: bool = False,
     config: ExperimentConfig | None = None, t0_ms: int | None = None,
+    max_roster_size: int | None = None,
     lookups: dict[str, tuple[Any, Any]] | None = None, info: object = None, feed: object = None,
     provider: object = None,
     prefetch: Callable[[list[str], int, int], Awaitable[None]] | None = None,
@@ -126,7 +127,7 @@ async def run_live(
             config=config, candidates=candidates, universe=universe, source=info, feed=feed,  # type: ignore[arg-type]
             returns_fn=adapter.returns_fn, cutoff_fn=adapter.cutoff_fn, t0_ms=t0,
             budget_usd=budget_usd, registry_path=registry_path, checkpoint_path=checkpoint_path,
-            analysis_script_hash=analysis_hash(), prepare=prepare)
+            analysis_script_hash=analysis_hash(), prepare=prepare, max_roster_size=max_roster_size)
         log.info("live.built", run_id=system.run_id, roster=len(system.runner._weights),  # noqa: SLF001
                  dry_run=dry_run)
         if dry_run:
@@ -146,6 +147,9 @@ def main() -> None:
                     help="rank from LOCAL fills parquets + local candles (instant roll, no "
                          "REST prefetch). Live positions + books are still real-time.")
     ap.add_argument("--state-dir", type=Path, default=Path("data/follow/live"))
+    ap.add_argument("--max-roster", type=int, default=50,
+                    help="cap the roster to the top-N by Kelly weight so it can be polled in "
+                         "real time under the rate limit (0 = no cap)")
     ap.add_argument("--budget", type=float, default=1000.0)
     ap.add_argument("--testnet", action="store_true")
     ap.add_argument("--dry-run", action="store_true",
@@ -155,7 +159,7 @@ def main() -> None:
     candidates = load_candidates(a.candidates, top_quintile_only=a.top_quintile_only)
     universe = load_universe(a.universe)
     # local-selection mode: parquet fills + static local candles ⇒ no REST prefetch/refetch
-    local = dict(provider=ParquetFillsProvider(a.fills_dir), refresh_lookups=None) \
+    local: dict[str, Any] = dict(provider=ParquetFillsProvider(a.fills_dir), refresh_lookups=None) \
         if a.fills_dir else {}
     log.info("live.start", n_candidates=len(candidates), n_universe=len(universe),
              dry_run=a.dry_run, testnet=a.testnet, local_fills=bool(a.fills_dir))
@@ -164,7 +168,7 @@ def main() -> None:
         network=Network.TESTNET if a.testnet else Network.MAINNET,
         registry_path=a.state_dir / "registry.jsonl",
         checkpoint_path=a.state_dir / "checkpoint.json", budget_usd=a.budget,
-        dry_run=a.dry_run, **local))
+        max_roster_size=a.max_roster or None, dry_run=a.dry_run, **local))
 
 
 if __name__ == "__main__":

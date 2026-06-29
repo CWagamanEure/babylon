@@ -67,12 +67,13 @@ class LiveFollowSystem:
         source: FillSource, feed: WebSocketFeed, returns_fn: ReturnsFn, cutoff_fn: CutoffFn,
         t0_ms: int, budget_usd: float, registry_path: Path, checkpoint_path: Path,
         analysis_script_hash: str, poll_interval_s: float = 1.05,
-        prepare: PrepareFn | None = None,
+        prepare: PrepareFn | None = None, max_roster_size: int | None = None,
     ) -> LiveFollowSystem:
         config.validate()
         registry = Registry(registry_path)
         scheduler = RollScheduler(candidates, returns_fn, cutoff_fn, config, registry,
-                                  analysis_script_hash=analysis_script_hash)
+                                  analysis_script_hash=analysis_script_hash,
+                                  max_roster_size=max_roster_size)
         prior = registry.latest()
         if prior is not None:
             # RESUME the latest committed sub-period — do NOT re-roll (the registry is the

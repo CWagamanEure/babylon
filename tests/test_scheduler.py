@@ -34,6 +34,14 @@ def test_select_ranks_top_quintile_and_weights():
     assert cutoffs == {"w0": 1000, "w1": 1001}          # seam tids carried for the roster only
 
 
+def test_select_caps_roster_size():
+    rets = {f"w{i}": _returns(i, 300 - i * 4) for i in range(40)}
+    cuts = {f"w{i}": i for i in range(40)}
+    roster, w, _ = select_roster(rets, cuts, top_quintile_frac=1.0, min_positions=6,
+                                 max_roster_size=10)
+    assert len(roster) == 10 and all(v <= 0.05 + 1e-12 for v in w.values())  # top-10 only
+
+
 def test_select_drops_thin_wallets():
     rets = {"good": _returns(1, 40, n=40), "thin": _returns(2, 99, n=3)}  # thin has best mean but <min
     roster, _, _ = select_roster(rets, {"good": 1, "thin": 2}, top_quintile_frac=1.0, min_positions=6)

@@ -32,15 +32,21 @@ CutoffFn = Callable[[str, int], int]
 def select_roster(
     returns_by_wallet: dict[str, np.ndarray], cutoff_tids: dict[str, int], *,
     top_quintile_frac: float = 0.2, min_positions: int = 6, max_wallet_frac: float = 0.05,
+    max_roster_size: int | None = None,
 ) -> tuple[list[str], dict[str, float], dict[str, int]]:
-    """Rank by median followable return, take the top `top_quintile_frac`, weight by
-    frozen fractional-Kelly. Returns (roster, weights, train_cutoff_tids) for the roster."""
+    """Rank by median followable return, take the top `top_quintile_frac` (capped at
+    `max_roster_size`), weight by frozen fractional-Kelly. The cap keeps the roster small
+    enough to POLL in real time under the HL rate limit — a huge roster can't be swept fast
+    enough to detect position changes before the front-loaded edge decays. Returns
+    (roster, weights, train_cutoff_tids)."""
     eligible = {w: np.asarray(r, dtype=np.float64)
                 for w, r in returns_by_wallet.items() if len(r) >= min_positions}
     if not eligible:
         return [], {}, {}
     ranked = sorted(eligible, key=lambda w: -float(np.median(eligible[w])))
     q = max(1, int(len(ranked) * top_quintile_frac))
+    if max_roster_size is not None:
+        q = min(q, max_roster_size)
     top = ranked[:q]
     weights = kelly_weights({w: eligible[w] for w in top}, max_frac=max_wallet_frac)
     cutoffs = {w: int(cutoff_tids.get(w, 0)) for w in weights}
@@ -51,7 +57,7 @@ class RollScheduler:
     def __init__(
         self, candidates: list[str], returns_fn: ReturnsFn, cutoff_fn: CutoffFn,
         config: ExperimentConfig, registry: Registry, *, analysis_script_hash: str,
-        top_quintile_frac: float = 0.2,
+        top_quintile_frac: float = 0.2, max_roster_size: int | None = None,
     ) -> None:
         config.validate()
         self._candidates = list(candidates)
@@ -61,6 +67,7 @@ class RollScheduler:
         self._registry = registry
         self._analysis_hash = analysis_script_hash
         self._tqf = top_quintile_frac
+        self._max_roster = max_roster_size
 
     def roll(self, t0_ms: int) -> tuple[list[str], dict[str, float], str]:
         """Select + freeze the roster for the sub-period starting at t0_ms, register its
@@ -76,7 +83,8 @@ class RollScheduler:
             cutoffs[w] = self._cutoff_fn(w, t0_ms)
         roster, weights, cut = select_roster(
             returns, cutoffs, top_quintile_frac=self._tqf,
-            min_positions=self._config.min_positions, max_wallet_frac=self._config.max_wallet_frac)
+            min_positions=self._config.min_positions, max_wallet_frac=self._config.max_wallet_frac,
+            max_roster_size=self._max_roster)
         if not roster:
             raise ValueError(f"roll @ T0={t0_ms} selected an empty roster — no eligible wallets")
         manifest = RunManifest.build(
