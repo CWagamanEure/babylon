@@ -35,7 +35,7 @@ class CaptureScorer:
         lo = t0_ms - self._train_ms
         closed = self._store.returns(wallet, lo, t0_ms)
         mtm: list[float] = []
-        for coin, d, entry_mk in self._sched.open_marked(wallet, lo):
+        for coin, d, entry_mk in self._sched.open_marked(wallet):   # ALL open positions (incl. long-held)
             snap = self._book.snap(coin, t0_ms, self._staleness)
             if snap is None or entry_mk <= 0:
                 continue

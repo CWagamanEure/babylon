@@ -144,14 +144,16 @@ class MarkoutScheduler:
         self._heap = kept
         return dropped
 
-    def open_marked(self, wallet: str, since_t: int) -> list[tuple[str, int, float]]:
-        """In-flight round-trips of `wallet` whose ENTRY is marked but which are still OPEN
-        (no exit), opened at/after since_t → (coin, direction, entry_mk). The Scorer MTMs
-        these at the cutoff so open losers enter the score (the disposition-bias fix)."""
+    def open_marked(self, wallet: str) -> list[tuple[str, int, float]]:
+        """ALL in-flight round-trips of `wallet` whose ENTRY is marked but which are still
+        OPEN (no exit) → (coin, direction, entry_mk). The Scorer MTMs these at the cutoff so
+        open losers enter the score (the disposition-bias fix). NO entry-time filter: an open
+        position has no exit, so there's no seam to protect — and the LONG-held open losers
+        (opened before the window) are exactly the ones the fix must cover (an audit found the
+        prior `entry_t >= since_t` filter censored them, flipping the score sign)."""
         out: list[tuple[str, int, float]] = []
         for (w, coin, _rid), rt in self._rt.items():
-            if w == wallet and rt.exit_t is None and rt.entry_mk is not None \
-                    and rt.entry_t >= since_t:
+            if w == wallet and rt.exit_t is None and rt.entry_mk is not None:
                 out.append((coin, rt.direction, rt.entry_mk))
         return out
 

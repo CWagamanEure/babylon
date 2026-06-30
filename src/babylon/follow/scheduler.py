@@ -34,11 +34,19 @@ def _sortino(r: np.ndarray) -> float:
     selection statistic on our data: it keeps UPSIDE-tail magnitude (real signal for a
     Kelly book) but penalizes DOWNSIDE dispersion (the blowup risk a follower inherits).
     Beats median (tail-blind, worst OOS) and Sharpe (penalizes the good upside tail too).
-    Sign(Sortino)=sign(mean), so a selected wallet always gets positive Kelly weight."""
+    Sign(Sortino)=sign(mean), so a selected wallet always gets positive Kelly weight.
+
+    The downside deviation is taken over ALL n (min(r,0), the standard form) and FLOORED at a
+    fraction of the overall dispersion — so a wallet with (near-)zero downside in its sample
+    can't explode the ratio and auto-rank top (the EPS / one-tiny-loser artifact an audit
+    flagged). With the floor, a no-loser wallet scores ~4×Sharpe, not +∞."""
+    if r.size == 0:
+        return 0.0
     mu = float(r.mean())
-    dn = r[r < 0]
-    dd = float(np.sqrt(np.mean(dn * dn))) if dn.size else 0.0
-    return mu / dd if dd > 0 else mu * 1e6   # no losing round-trip → rank by mean, far up
+    neg = np.minimum(r, 0.0)
+    dd = float(np.sqrt(np.mean(neg * neg)))           # downside deviation over N (standard)
+    floor = 0.25 * float(r.std()) + 1e-9              # regularize: no (near-)zero-downside blowup
+    return mu / max(dd, floor)
 
 
 def select_roster(
