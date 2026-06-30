@@ -144,6 +144,17 @@ class MarkoutScheduler:
         self._heap = kept
         return dropped
 
+    def open_marked(self, wallet: str, since_t: int) -> list[tuple[str, int, float]]:
+        """In-flight round-trips of `wallet` whose ENTRY is marked but which are still OPEN
+        (no exit), opened at/after since_t → (coin, direction, entry_mk). The Scorer MTMs
+        these at the cutoff so open losers enter the score (the disposition-bias fix)."""
+        out: list[tuple[str, int, float]] = []
+        for (w, coin, _rid), rt in self._rt.items():
+            if w == wallet and rt.exit_t is None and rt.entry_mk is not None \
+                    and rt.entry_t >= since_t:
+                out.append((coin, rt.direction, rt.entry_mk))
+        return out
+
     @property
     def pending(self) -> int:
         return len(self._heap)
