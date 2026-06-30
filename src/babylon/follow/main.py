@@ -125,7 +125,8 @@ async def run_live(
             await prepare(t0)
         system = LiveFollowSystem.build(
             config=config, candidates=candidates, universe=universe, source=info, feed=feed,  # type: ignore[arg-type]
-            returns_fn=adapter.returns_fn, cutoff_fn=adapter.cutoff_fn, t0_ms=t0,
+            returns_fn=adapter.returns_fn, cutoff_fn=adapter.cutoff_fn,
+            activity_fn=adapter.activity_fn, t0_ms=t0,
             budget_usd=budget_usd, registry_path=registry_path, checkpoint_path=checkpoint_path,
             analysis_script_hash=analysis_hash(), prepare=prepare, max_roster_size=max_roster_size)
         log.info("live.built", run_id=system.run_id, roster=len(system.runner._weights),  # noqa: SLF001

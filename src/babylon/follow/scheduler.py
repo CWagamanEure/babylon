@@ -27,6 +27,8 @@ log = get_logger("follow.scheduler")
 ReturnsFn = Callable[[str, int], np.ndarray]
 # (wallet, t0_ms) -> the wallet's last train-window fill tid (0 if none)
 CutoffFn = Callable[[str, int], int]
+# (wallet, t0_ms) -> raw FILL count in the train window (the disposition-free eligibility gate)
+ActivityFn = Callable[[str, int], int]
 
 
 def _sortino(r: np.ndarray) -> float:
@@ -52,16 +54,25 @@ def _sortino(r: np.ndarray) -> float:
 def select_roster(
     returns_by_wallet: dict[str, np.ndarray], cutoff_tids: dict[str, int], *,
     top_quintile_frac: float = 0.2, min_positions: int = 6, max_wallet_frac: float = 0.05,
-    max_roster_size: int | None = None,
+    max_roster_size: int | None = None, activity_by_wallet: dict[str, int] | None = None,
 ) -> tuple[list[str], dict[str, float], dict[str, int]]:
-    """Rank by SORTINO of the followable return (mean/downside-deviation — the best
-    OOS-predictive statistic on our data; see _sortino), take the top `top_quintile_frac`
-    (capped at `max_roster_size`), weight by frozen fractional-Kelly. The cap keeps the roster small
-    enough to POLL in real time under the HL rate limit — a huge roster can't be swept fast
-    enough to detect position changes before the front-loaded edge decays. Returns
-    (roster, weights, train_cutoff_tids)."""
-    eligible = {w: np.asarray(r, dtype=np.float64)
-                for w, r in returns_by_wallet.items() if len(r) >= min_positions}
+    """Rank by SORTINO of the followable return (mean/downside-deviation; see _sortino), take
+    the top `top_quintile_frac` (capped at `max_roster_size`), weight by frozen fractional-Kelly.
+
+    ELIGIBILITY: when `activity_by_wallet` is given, gate on RAW activity (fill count) ≥
+    min_positions — NOT closed-round-trip count. A disposition-corrected re-test showed the
+    closed-count gate re-introduces disposition correlation (it selects high-turnover wallets
+    and shrinks the pool); raw-activity gating keeps a broad, unbiased pool and the min then
+    has no material effect. A hard floor of ≥2 returns is still required to compute a Sortino.
+    Falls back to closed-count (the old behaviour) when activity isn't supplied (tests).
+
+    The roster cap keeps it small enough to POLL in real time under the HL rate limit."""
+    if activity_by_wallet is not None:
+        eligible = {w: np.asarray(r, dtype=np.float64) for w, r in returns_by_wallet.items()
+                    if len(r) >= 2 and activity_by_wallet.get(w, 0) >= min_positions}
+    else:
+        eligible = {w: np.asarray(r, dtype=np.float64)
+                    for w, r in returns_by_wallet.items() if len(r) >= min_positions}
     if not eligible:
         return [], {}, {}
     ranked = sorted(eligible, key=lambda w: -_sortino(eligible[w]))
@@ -79,11 +90,13 @@ class RollScheduler:
         self, candidates: list[str], returns_fn: ReturnsFn, cutoff_fn: CutoffFn,
         config: ExperimentConfig, registry: Registry, *, analysis_script_hash: str,
         top_quintile_frac: float = 0.2, max_roster_size: int | None = None,
+        activity_fn: ActivityFn | None = None,
     ) -> None:
         config.validate()
         self._candidates = list(candidates)
         self._returns_fn = returns_fn
         self._cutoff_fn = cutoff_fn
+        self._activity_fn = activity_fn      # (wallet, t0) -> raw fill count in train window
         self._config = config
         self._registry = registry
         self._analysis_hash = analysis_script_hash
@@ -99,13 +112,16 @@ class RollScheduler:
         # cache holds ONE wallet's fills at a time (the whole pool at once OOMs a small box)
         returns: dict[str, np.ndarray] = {}
         cutoffs: dict[str, int] = {}
+        activity: dict[str, int] | None = {} if self._activity_fn is not None else None
         for w in self._candidates:
             returns[w] = self._returns_fn(w, t0_ms)
             cutoffs[w] = self._cutoff_fn(w, t0_ms)
+            if self._activity_fn is not None and activity is not None:
+                activity[w] = self._activity_fn(w, t0_ms)
         roster, weights, cut = select_roster(
             returns, cutoffs, top_quintile_frac=self._tqf,
             min_positions=self._config.min_positions, max_wallet_frac=self._config.max_wallet_frac,
-            max_roster_size=self._max_roster)
+            max_roster_size=self._max_roster, activity_by_wallet=activity)
         if not roster:
             raise ValueError(f"roll @ T0={t0_ms} selected an empty roster — no eligible wallets")
         manifest = RunManifest.build(

@@ -62,6 +62,15 @@ class SelectionAdapter:
             lag_ms=self._cfg.lag_bucket_ms, min_hold_ms=self._cfg.min_hold_ms,
             before_ms=t0_ms, basket=self._basket, beta=self._cfg.beta)
 
+    def activity_fn(self, wallet: str, t0_ms: int) -> int:
+        """Raw FILL count in [t0−train, t0) — the disposition-free eligibility gate (a
+        re-test showed gating on closed-round-trip count re-introduces disposition bias)."""
+        df = self._df(wallet, t0_ms)
+        if df is None or df.height == 0:
+            return 0
+        lo = t0_ms - self._train_ms
+        return int(df.filter((pl.col("time") >= lo) & (pl.col("time") < t0_ms)).height)
+
     def cutoff_fn(self, wallet: str, t0_ms: int) -> int:
         df = self._df(wallet, t0_ms)
         if df is None or df.height == 0:

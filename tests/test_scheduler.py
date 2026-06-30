@@ -47,6 +47,21 @@ def test_select_ranks_by_sortino_penalizing_downside():
     assert roster and roster[0] == "steady"
 
 
+def test_select_gates_on_raw_activity_not_closed_count():
+    rets = {f"w{i}": _returns(i, 100 - i * 3) for i in range(10)}   # all have many returns
+    cuts = {w: 1 for w in rets}
+    activity = {f"w{i}": (50 if i < 8 else 5) for i in range(10)}   # w8,w9 are low-activity
+    roster, _, _ = select_roster(rets, cuts, top_quintile_frac=1.0, min_positions=20,
+                                 activity_by_wallet=activity)
+    assert "w8" not in roster and "w9" not in roster               # gated OUT by activity
+    assert "w0" in roster                                          # high activity + edge → in
+    # scoring floor: a very-active wallet with <2 returns can't be scored → excluded
+    r2, _, _ = select_roster({"thin": _returns(1, 50, n=1), "full": _returns(2, 50)},
+                             {"thin": 1, "full": 1}, top_quintile_frac=1.0, min_positions=20,
+                             activity_by_wallet={"thin": 99, "full": 99})
+    assert r2 == ["full"]
+
+
 def test_select_caps_roster_size():
     rets = {f"w{i}": _returns(i, 300 - i * 4) for i in range(40)}
     cuts = {f"w{i}": i for i in range(40)}
