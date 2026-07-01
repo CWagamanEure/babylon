@@ -124,15 +124,23 @@ class LiveFollowSystem:
             # NOT position-mirror. Tranche caps from the book budget; per-wallet tail-aware sizing.
             # entry_lag_ms is the EXECUTOR delay (default 0 = enter on detection; real ~30-60s from
             # polling), decoupled from lag_bucket_ms (the conservative 15-min selection/gate mark).
+            # min_tranche floors DUST — must be a fraction of the HARVEST base (budget·base_frac,
+            # ~$10), NOT 0.02·target_notional_usd (the $1000 legacy per-position number → a $20
+            # floor that capped out EVERY tail-aware tranche, which run $3-15). Peg it to the base.
+            harvest_base = budget_usd * config.harvest_base_frac
             ledger = HarvestLedger(
                 entry_lag_ms=config.entry_lag_ms, horizon_ms=config.markout_horizon_ms,
                 max_coin_notional=config.max_coin_frac * budget_usd,
                 max_gross_notional=config.gross_target * budget_usd,
-                min_tranche_notional=max(1.0, 0.02 * config.target_notional_usd))
+                min_tranche_notional=max(1.0, 0.1 * harvest_base))
             notionals = _harvest_notionals(returns_fn, roster, config, budget_usd, t0_ms)
             runner = HarvestRunner(ledger, notionals, executor, universe=set(universe),
                                    watcher=watcher, roster=roster, budget_usd=budget_usd)
             watcher.set_opens_sink(runner.ingest_opens)
+            # Stream fills FORWARD ONLY from now — never replay the wallets' weeks-old history as
+            # fake "fresh" opens (that flooded the ledger with ~thousands of stale, capped-out
+            # tranches and harvested nothing). Fresh start → from T0; resume → from wall clock.
+            watcher.seed_cursors(t0_ms if prior is None else wall_ms())
             realized_journal = RealizedJournal(checkpoint_path.parent / "realized.jsonl")
         else:
             sizer = FixedFractionSizer(per_coin_fraction=config.max_coin_frac)

@@ -29,6 +29,39 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _ofill(t, coin, side, sz, startpos, tid):
+    # a fill with the extra fields the OPENS path needs (px/crossed/hash)
+    return {"time": t, "coin": coin, "side": side, "sz": sz, "startPosition": startpos,
+            "tid": tid, "px": 100.0, "crossed": True, "hash": "0xreal"}
+
+
+def test_seed_cursors_streams_forward_only():
+    # regression: without seeding, a fresh start polls from cursor=0 and replays the wallet's
+    # ENTIRE history as "fresh" opens (flooded the harvest ledger with weeks-old stale opens).
+    src = FakeSource([
+        _ofill(1000, "BTC", "B", 5.0, 0.0, 1),    # OLD open (pre-seed) → must be skipped
+        _ofill(5000, "ETH", "B", 4.0, 0.0, 2),    # NEW open (post-seed) → must fire
+    ])
+    captured: list = []
+    w = WalletWatcher(src, [W], min_interval_s=0.0,
+                      on_opens=lambda _wal, ops: captured.extend(ops))
+    w.seed_cursors(4000)                          # stream forward only from t=4000
+    _run(w.poll_wallet(W, 9999))
+    coins = [coin for coin, _ev in captured]
+    assert "ETH" in coins and "BTC" not in coins  # only the post-seed open; no stale replay
+
+
+def test_without_seed_replays_history():
+    # documents WHY seeding is needed: cursor=0 emits every historical open
+    src = FakeSource([_ofill(1000, "BTC", "B", 5.0, 0.0, 1), _ofill(5000, "ETH", "B", 4.0, 0.0, 2)])
+    captured: list = []
+    w = WalletWatcher(src, [W], min_interval_s=0.0,
+                      on_opens=lambda _wal, ops: captured.extend(ops))
+    _run(w.poll_wallet(W, 9999))                  # cursor=0 → replays ALL history
+    coins = [coin for coin, _ev in captured]
+    assert "BTC" in coins and "ETH" in coins
+
+
 def test_start_position_anchoring():
     # latest fill's startPosition ± sz IS the net (absolute, not a running sum)
     src = FakeSource([

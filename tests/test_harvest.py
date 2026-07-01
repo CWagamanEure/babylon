@@ -38,6 +38,23 @@ def test_full_lifecycle_long():
     assert led.gross_open_notional() == 0.0           # closed, no exposure
 
 
+def test_min_tranche_lets_realistic_harvest_size_through():
+    # regression: min_tranche must be scaled to the harvest BASE (~$10 = budget·base_frac), NOT
+    # 0.02·target_notional ($1000 → a $20 floor that capped out EVERY $3-15 tranche → 0 trades).
+    led = _ledger(min_tranche_notional=1.0)                       # 0.1 · $10 base
+    led.on_open_event(event_id="e", wallet="w", coin="BTC", direction=1,
+                      notional=12.0, open_event_ms=0)             # a typical tail-aware tranche
+    due = led.due_entries(LAG)
+    assert [t.id for t in due] == ["e"] and due[0].notional == 12.0   # enters, not capped
+
+
+def test_min_tranche_still_caps_dust():
+    led = _ledger(min_tranche_notional=1.0)
+    led.on_open_event(event_id="d", wallet="w", coin="BTC", direction=1,
+                      notional=0.5, open_event_ms=0)              # below the $1 floor
+    assert led.due_entries(LAG) == []                             # dust still capped
+
+
 def test_short_direction_bps_sign():
     led = _ledger(entry_lag_ms=0)
     led.on_open_event(event_id="s", wallet="w", coin="ETH", direction=-1, notional=500.0,

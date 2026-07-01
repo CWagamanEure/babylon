@@ -208,6 +208,15 @@ class WalletWatcher:
         for w in self._wallets:
             await self.truth_up(w)
 
+    def seed_cursors(self, since_ms: int) -> None:
+        """Stream fills FORWARD ONLY from `since_ms` (skip history) for EVERY current wallet —
+        the harvest executor's start seed so it doesn't replay weeks-old opens as fresh signals.
+        Unlike `update_roster` (which seeds only NEW wallets) this reseeds all; unlike `cold_start`
+        it doesn't fetch positions (harvest tracks its own tranches, not wallet positions)."""
+        for w in self._wallets:
+            self._cursor[w] = since_ms
+            self._boundary_tids[w] = set()
+
     async def cold_start(self, since_ms: int) -> None:
         """Seed positions from the exchange and stream fills forward only."""
         await self.truth_up_all()
