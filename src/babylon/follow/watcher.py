@@ -20,12 +20,20 @@ engine can checkpoint the watcher at its snapshot cut and restore both consisten
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any, Protocol
 
+import numpy as np
+
 from babylon.data.wallet_fills import _Throttle
+from babylon.follow.skill import OpenEvent, open_events
 from babylon.logging import get_logger
 
 log = get_logger("watcher")
+
+# (wallet, [(coin, OpenEvent), ...]) — emitted per poll for the harvest executor. The mirror
+# runner leaves this None (it reads net positions, not events).
+OpensSink = Callable[[str, "list[tuple[str, OpenEvent]]"], None]
 
 _FLAT_EPS = 1e-12
 _REL_TOL = 1e-9  # flat when |net| < _REL_TOL·|startPosition| (meme-coin / float-ULP safe)
@@ -42,10 +50,12 @@ class FillSource(Protocol):
 
 class WalletWatcher:
     def __init__(
-        self, source: FillSource, wallets: list[str], *, min_interval_s: float = 1.05
+        self, source: FillSource, wallets: list[str], *, min_interval_s: float = 1.05,
+        on_opens: OpensSink | None = None,
     ) -> None:
         self._src = source
         self._wallets = list(wallets)
+        self._on_opens = on_opens   # opt-in: emit per-poll open events (harvest executor)
         self._throttle = _Throttle(min_interval_s)
         # Current signed net position per (wallet, coin); absent = flat.
         self._pos: dict[str, dict[str, float]] = {w: {} for w in wallets}
@@ -55,6 +65,10 @@ class WalletWatcher:
         # Per-wallet lock so a poll and a truth-up can't interleave at their awaits
         # and corrupt _pos (the "same loop ⇒ atomic" assumption is false across awaits).
         self._lock: dict[str, asyncio.Lock] = {w: asyncio.Lock() for w in wallets}
+
+    def set_opens_sink(self, sink: OpensSink | None) -> None:
+        """Wire (or clear) the per-poll open-event sink — set after the HarvestRunner exists."""
+        self._on_opens = sink
 
     # --- reads -------------------------------------------------------------
 
@@ -109,8 +123,38 @@ class WalletWatcher:
             self._last_detect[wallet] = now_ms
             if not fresh:
                 return 0
+            if self._on_opens is not None:
+                opens = self._detect_opens(fresh)
+                if opens:
+                    self._on_opens(wallet, opens)
             self._apply(wallet, fresh)
             return len(fresh)
+
+    @staticmethod
+    def _detect_opens(fills: list[dict[str, Any]]) -> list[tuple[str, OpenEvent]]:
+        """Per-coin OPEN events from this poll's fresh fills via `open_events` (the SAME state
+        machine the offline study/selection uses → live ≡ validated). Each fill's startPosition
+        re-anchors the machine, so a missed prior fill can't corrupt detection, and an
+        open-then-close WITHIN one poll is still caught. Each event carries its originating fill's
+        `tid`, so the caller dedups by (wallet, coin, entry_t, tid) across overlapping polls — two
+        opens in the SAME ms don't collide (the HarvestLedger is idempotent on the event id)."""
+        by_coin: dict[str, list[dict[str, Any]]] = {}
+        for f in fills:
+            by_coin.setdefault(str(f["coin"]), []).append(f)
+        out: list[tuple[str, OpenEvent]] = []
+        for coin, fs in by_coin.items():
+            fs.sort(key=lambda f: (int(f["time"]), int(f["tid"])))
+            for ev in open_events(
+                np.array([int(f["time"]) for f in fs], dtype=np.int64),
+                np.array([float(f["px"]) for f in fs]),
+                np.array([float(f["sz"]) for f in fs]),
+                np.array([str(f["side"]) for f in fs]),
+                np.array([bool(f["crossed"]) for f in fs]),
+                np.array([float(f["startPosition"]) for f in fs]),
+                np.array([str(f.get("hash", "")) for f in fs]),
+                np.array([int(f["tid"]) for f in fs], dtype=np.int64)):
+                out.append((coin, ev))
+        return out
 
     def _apply(self, wallet: str, fills: list[dict[str, Any]]) -> None:
         # startPosition-anchored: the (time, tid)-latest fill per coin is the absolute

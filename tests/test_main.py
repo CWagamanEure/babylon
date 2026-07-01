@@ -32,6 +32,28 @@ def test_locked_config_validates_and_binds_universe():
     assert c.train_days == 30 and c.mar_bps == 8.0 and c.max_wallet_frac == 0.05
 
 
+def test_locked_config_markout_operating_point():
+    # selection="markout" swaps in the VALIDATED fixed-horizon rule (audit/EDGE_INVESTIGATION.md)
+    c = locked_config(["BTC", "ETH"], selection="markout")
+    c.validate()
+    assert c.selection_signal == "markout"
+    assert c.markout_horizon_ms == 21_600_000        # 6 h fixed horizon
+    assert c.lag_bucket_ms == 900_000                # 15 min follower lag (not 60 s)
+    assert c.selection_rank == "trimmed_mean"
+    assert c.min_positions == 5                      # validated min_train = ≥5 train OPENS
+    # default stays the original round-trip Sortino rule
+    d = locked_config(["BTC", "ETH"])
+    assert d.selection_signal == "roundtrip" and d.lag_bucket_ms == 60_000
+    assert d.selection_rank == "sortino" and d.markout_horizon_ms == 0
+    assert d.min_positions == 20                     # round-trip raw-activity gate unchanged
+
+
+def test_locked_config_rejects_bad_selection():
+    import pytest
+    with pytest.raises(ValueError, match="selection must be"):
+        locked_config(["BTC"], selection="bogus")
+
+
 def test_load_candidates_full_and_top_quintile(tmp_path):
     p = tmp_path / "w.csv"
     pl.DataFrame({"w": ["0xa", "0xb", "0xc"], "top_quintile": [True, False, True]}).write_csv(p)
@@ -97,8 +119,29 @@ def test_dry_run_builds_and_rolls(tmp_path):
         dry_run=True))
     assert system.run_id.startswith("run_")
     assert system.registry.committed(6 * H) is not None     # initial manifest registered
-    assert system.runner._weights                            # a roster was selected
+    assert system.runner.n_roster > 0                        # a roster was selected
     assert system.config.train_days == 1
+
+
+def test_dry_run_markout_path_builds_roster(tmp_path):
+    # end-to-end smoke through the VALIDATED markout path: fixed-horizon, neutralized against the
+    # 2-coin basket (single-coin would self-cancel to 0), trimmed-mean ranked. TESTC outperforms
+    # the flat basket coin → positive neutralized markout → a roster is selected.
+    look = {**LOOK, "FLAT": (np.array([0, H, 2 * H, 3 * H, 4 * H, 5 * H]),
+                             np.array([100.0] * 6))}
+    fills_dir = tmp_path / "fills"; fills_dir.mkdir()
+    cands = [f"w{i}" for i in range(10)]
+    for i, w in enumerate(cands):
+        _roundtrips(108.0 + i, tid0=10 * i).write_parquet(fills_dir / f"{w}.parquet")
+    cfg = _cfg(selection_signal="markout", markout_horizon_ms=H, lag_bucket_ms=0,
+               selection_rank="trimmed_mean", min_positions=1, beta=1.0)
+    system = asyncio.run(run_live(
+        candidates=cands, universe=["TESTC", "FLAT"], registry_path=tmp_path / "reg.jsonl",
+        checkpoint_path=tmp_path / "ckpt.json", config=cfg, lookups=look, t0_ms=6 * H,
+        info=_FakeInfo(), feed=_FakeFeed(), provider=ParquetFillsProvider(fills_dir),
+        dry_run=True))
+    assert system.runner.n_roster > 0                  # neutralized markout selected a roster
+    assert system.config.selection_signal == "markout"
 
 
 def test_resume_skips_reroll_and_prefetch(tmp_path):

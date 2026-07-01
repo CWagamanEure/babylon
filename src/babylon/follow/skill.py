@@ -129,6 +129,61 @@ def _positions_for(coin_group: pl.DataFrame) -> list[Position]:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class OpenEvent:
+    entry_t: int
+    direction: int       # +1 long / -1 short
+    taker_open: bool     # opening fill crossed the spread (conviction)
+    conviction: bool     # opening fill has a real hash (not TWAP/liquidation)
+    is_leading: bool     # first open per coin, BEFORE any observed close (startPos-seed suspect)
+    notional: float      # |opening fill| * px — the bet size at entry
+    tid: int = 0         # originating fill's trade id (0 when unknown, e.g. the offline study)
+
+
+def open_events(
+    times: np.ndarray, px: np.ndarray, sz: np.ndarray, side: np.ndarray,
+    crossed: np.ndarray, startpos: np.ndarray | None = None,
+    hashes: np.ndarray | None = None, tids: np.ndarray | None = None,
+) -> list[OpenEvent]:
+    """One event per POSITION OPENING (flat→position or flip) for one coin — the SINGLE source of
+    truth shared by live selection (followable.markout_returns) and the offline study (selci_fh),
+    so live ≡ validated by construction. Adds (same-side scale-in) do NOT emit (one entry signal
+    per position). The flat-state machine is bit-for-bit identical to ``reconstruct``;
+    ``is_leading`` flags the first open before any observed close (startPosition=0 seed, Audit 11),
+    surfaced WITHOUT dropping never-closers."""
+    signed = np.where(side == "B", sz, -sz)
+    ev: list[OpenEvent] = []
+    def _conv(i: int) -> bool:
+        return hashes is None or str(hashes[i]) != ZERO_HASH
+    def _tid(i: int) -> int:
+        return int(tids[i]) if tids is not None else 0
+    pos = float(startpos[0]) if startpos is not None and startpos.size else 0.0
+    maxabs = abs(pos)
+    tol = max(_REL_TOL * maxabs, 1e-15)
+    seen_close = False
+    for i in range(times.size):
+        d = float(signed[i])
+        maxabs = max(maxabs, abs(pos + d))
+        tol = max(_REL_TOL * maxabs, 1e-15)
+        if pos == 0.0 or (d > 0) == (pos > 0):              # open (from flat) or add same side
+            if pos == 0.0:                                  # NEW position from flat
+                ev.append(OpenEvent(int(times[i]), 1 if d > 0 else -1, bool(crossed[i]),
+                                    _conv(i), not seen_close, abs(d) * float(px[i]), _tid(i)))
+            pos += d
+        else:                                               # opposite sign → closing (maybe a flip)
+            close = min(abs(d), abs(pos))
+            pos += close if pos < 0 else -close
+            if abs(pos) < tol:                              # position closed
+                seen_close = True
+                pos = 0.0
+                leftover = abs(d) - close
+                if leftover > tol:                          # flip → open the opposite side (clean)
+                    ev.append(OpenEvent(int(times[i]), 1 if d > 0 else -1, bool(crossed[i]),
+                                        _conv(i), False, leftover * float(px[i]), _tid(i)))
+                    pos = leftover if d > 0 else -leftover
+    return ev
+
+
 def wallet_skill(
     wallet: str, df: pl.DataFrame, *,
     universe: set[str], basket: tuple[np.ndarray, np.ndarray] | None,
@@ -171,6 +226,15 @@ def build_basket(candles_dir: Path, coins: list[str]) -> tuple[np.ndarray, np.nd
         if f.exists():
             df = pl.read_parquet(f).sort("time")
             series[c] = (df["time"].to_numpy(), df["close"].to_numpy())
+    return basket_from_series(series)
+
+
+def basket_from_series(
+    series: dict[str, tuple[np.ndarray, np.ndarray]],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Equal-weight hourly return index from already-loaded (times, close) series → the same
+    (times, index) build_basket returns. Lets the live runner neutralize against the candle
+    lookups it already holds (no parquet re-read, tracks the per-roll refresh)."""
     if not series:
         return np.array([0]), np.array([1.0])
     grid = np.unique(np.concatenate([t for t, _ in series.values()]))

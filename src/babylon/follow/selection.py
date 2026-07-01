@@ -15,7 +15,7 @@ import numpy as np
 import polars as pl
 
 from babylon.follow.experiment import ExperimentConfig
-from babylon.follow.followable import followable_returns
+from babylon.follow.followable import followable_returns, markout_returns
 
 _DAY_MS = 86_400_000
 # (wallet, start_ms, end_ms) -> the wallet's fills in [start, end); empty frame if none
@@ -45,6 +45,10 @@ class SelectionAdapter:
         """Swap in fresh candle lookups for the next roll (live multi-month runs)."""
         self._lookups = lookups
 
+    def set_basket(self, basket: tuple[np.ndarray, np.ndarray] | None) -> None:
+        """Swap in a fresh neutralizing basket for the next roll (markout path)."""
+        self._basket = basket
+
     def _df(self, wallet: str, t0_ms: int) -> pl.DataFrame:
         key = (wallet, t0_ms)
         if key != self._cache_key:                 # evict the previous wallet (bound memory)
@@ -57,6 +61,13 @@ class SelectionAdapter:
         df = self._df(wallet, t0_ms)
         if df is None or df.height == 0:
             return np.empty(0, dtype=np.float64)
+        if self._cfg.selection_signal == "markout":
+            # validated fixed-horizon edge: per-entry markout, NO universe gate (default None =
+            # all candle coins = exactly the validated study), neutralized via the basket.
+            return markout_returns(
+                df, lookups=self._lookups, lag_ms=self._cfg.lag_bucket_ms,
+                horizon_ms=self._cfg.markout_horizon_ms, before_ms=t0_ms,
+                basket=self._basket, beta=self._cfg.beta)
         return followable_returns(
             df, universe=self._universe, lookups=self._lookups,
             lag_ms=self._cfg.lag_bucket_ms, min_hold_ms=self._cfg.min_hold_ms,

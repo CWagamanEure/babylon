@@ -26,3 +26,7 @@ logs/
 .DS_Store
 .idea/
 .vscode/
+
+# Local research scratch + cross-repo data dumps (multi-GB: jsonl extracts, monthly parquets)
+scratch_conv/
+other_repo_notes/

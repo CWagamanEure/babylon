@@ -50,6 +50,50 @@ def test_followable_returns_short_direction():
     assert len(r) == 1 and abs(r[0] - (-1000.0)) < 1.0
 
 
+def test_markout_signal_through_adapter():
+    # selection_signal="markout" routes returns_fn to the validated fixed-horizon markout.
+    # entry at 3h, lag 0, horizon H: ein=close@2h=100, eout=close@3h=105 -> +500bp (NOT the
+    # +1000bp the round-trip path gives), and it scores the OPEN regardless of the exit.
+    cfg = _cfg(selection_signal="markout", markout_horizon_ms=H, lag_bucket_ms=0,
+               selection_rank="trimmed_mean")
+    fills = _fills()
+    adapter = SelectionAdapter(lambda w, lo, hi: fills, universe={"TESTC"}, lookups=LOOK, config=cfg)
+    r = adapter.returns_fn("0xw", 9 * H)            # t0 far after -> seam guard keeps it
+    assert r.size == 1 and abs(r[0] - 500.0) < 1.0
+    # the round-trip path on the SAME config-less call gives a different number (regression anchor)
+    rt = followable_returns(fills, universe={"TESTC"}, lookups=LOOK, lag_ms=0, min_hold_ms=0)
+    assert abs(rt[0] - 1000.0) < 1.0 and not np.isclose(r[0], rt[0])
+
+
+def test_markout_scores_never_closer():
+    # an open with NO matching close: round-trip drops it, markout scores it (the whole point)
+    df = pl.DataFrame({
+        "time": [3 * H], "coin": ["TESTC"], "px": [100.0], "sz": [1.0], "side": ["B"],
+        "crossed": [True], "startPosition": [0.0], "hash": ["0xreal"], "tid": [1]})
+    cfg = _cfg(selection_signal="markout", markout_horizon_ms=H, lag_bucket_ms=0)
+    adapter = SelectionAdapter(lambda w, lo, hi: df, universe={"TESTC"}, lookups=LOOK, config=cfg)
+    assert adapter.returns_fn("0xw", 9 * H).size == 1
+    assert followable_returns(df, universe={"TESTC"}, lookups=LOOK, lag_ms=0,
+                              min_hold_ms=0).size == 0   # round-trip path drops the never-closer
+
+
+def test_trimmed_mean_ranking():
+    from babylon.follow.scheduler import _trimmed_mean, select_roster
+    r = np.array([-1000.0, *([10.0] * 18), 1000.0])    # trim 10%/side drops both outliers
+    assert abs(_trimmed_mean(r) - 10.0) < 1e-9
+    assert _trimmed_mean(np.array([5.0])) == 5.0        # <5 obs -> plain mean
+    ret = {"A": np.linspace(3.0, 7.0, 20), "B": np.linspace(18.0, 22.0, 20)}  # B higher, both vary
+    roster, _, _ = select_roster(ret, {"A": 1, "B": 2}, top_quintile_frac=0.5, min_positions=1,
+                                 activity_by_wallet={"A": 100, "B": 100}, rank_stat="trimmed_mean")
+    assert roster and roster[0] == "B"                  # higher trimmed mean ranks first
+
+
+def test_markout_config_requires_horizon():
+    import pytest
+    with pytest.raises(AssertionError):
+        _cfg(selection_signal="markout", markout_horizon_ms=0).validate()
+
+
 def test_seam_guard_excludes_open_roundtrip():
     df = _fills()
     before = followable_returns(df, universe={"TESTC"}, lookups=LOOK, lag_ms=0,

@@ -22,6 +22,7 @@ from babylon.follow.skill import (
     WalletSkill,
     _basket_ret_bps,
     _positions_for,
+    open_events,
 )
 
 
@@ -120,6 +121,58 @@ def followable_returns(
             if basket is not None:
                 raw -= p.direction * beta * _basket_ret_bps(
                     basket, p.entry_t + lag_ms, p.exit_t + lag_ms)
+            bps.append(raw)
+    return np.asarray(bps, dtype=np.float64)
+
+
+def markout_returns(
+    df: pl.DataFrame, *,
+    lookups: dict[str, tuple[np.ndarray, np.ndarray]], lag_ms: int, horizon_ms: int,
+    universe: set[str] | None = None,
+    before_ms: int | None = None, basket: tuple[np.ndarray, np.ndarray] | None = None,
+    beta: float = 1.0, taker_only: bool = True, conviction_only: bool = True,
+    drop_leading: bool = False,
+) -> np.ndarray:
+    """Per-ENTRY FIXED-HORIZON markout returns (bps) — the validated selection signal
+    (see audit/EDGE_INVESTIGATION.md). For every position OPENING, mark the neutralized return
+    from ``entry_t + lag_ms`` to ``entry_t + lag_ms + horizon_ms`` at candle close — regardless of
+    when the wallet closes. This keeps never-closers and carries NO open/closed disposition bias,
+    unlike ``followable_returns`` (round-trip, which the study showed yields no edge).
+
+    ``universe=None`` (DEFAULT) prices every candle-priceable coin — this is what the validated
+    study (`selci_fh`) did, so the default reproduces it EXACTLY. Pass an explicit ``universe`` ONLY
+    to deliberately restrict the coin set (a different rule than was validated). [Change-audit A2:
+    the prior mandatory ``universe`` arg silently dropped majors vs the validated array.]
+    ``before_ms`` seam guard: include only entries whose FULL markout window finished before T0
+    (``entry+lag+horizon < before_ms``), so a window straddling T0 can't leak into training.
+    ``drop_leading`` excludes the first (startPos-seed-suspect) open per coin (Audit 11 sensitivity).
+    ``basket=None`` ⇒ directional; pass a basket for the deployed NEUTRALIZED signal."""
+    bps: list[float] = []
+    for (coin,), g in df.sort("time").group_by("coin", maintain_order=True):
+        c = str(coin)
+        if c not in lookups or (universe is not None and c not in universe):
+            continue
+        lookup = lookups[c]
+        g = g.sort("time")
+        for e in open_events(
+            g["time"].to_numpy(), g["px"].to_numpy(), g["sz"].to_numpy(),
+            g["side"].to_numpy(), g["crossed"].to_numpy(), g["startPosition"].to_numpy(),
+            g["hash"].to_numpy() if "hash" in g.columns else None,
+        ):
+            if (taker_only and not e.taker_open) or (conviction_only and not e.conviction):
+                continue
+            if drop_leading and e.is_leading:
+                continue
+            end = e.entry_t + lag_ms + horizon_ms
+            if before_ms is not None and end >= before_ms:
+                continue  # seam guard: full markout window must finish before T0
+            ein = _close_at(lookup, e.entry_t + lag_ms)
+            eout = _close_at(lookup, end)
+            if ein is None or eout is None:
+                continue
+            raw = e.direction * (eout / ein - 1.0) * 1e4
+            if basket is not None:
+                raw -= e.direction * beta * _basket_ret_bps(basket, e.entry_t + lag_ms, end)
             bps.append(raw)
     return np.asarray(bps, dtype=np.float64)
 

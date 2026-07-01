@@ -51,10 +51,67 @@ def _sortino(r: np.ndarray) -> float:
     return mu / max(dd, floor)
 
 
+def _trimmed_mean(r: np.ndarray, trim: float = 0.1) -> float:
+    """Trimmed mean (drop the trim% tails each side) — the empirically best OOS-predictive
+    selection statistic for the fixed-horizon markout signal (audit/EDGE_INVESTIGATION.md): it
+    beats Sortino, which penalized downside dispersion that did NOT predict OOS. Robust to the
+    fat tails; with <5 obs falls back to the plain mean (nothing to trim)."""
+    if r.size == 0:
+        return 0.0
+    if r.size < 5:
+        return float(r.mean())
+    lo, hi = np.percentile(r, [trim * 100.0, (1.0 - trim) * 100.0])
+    m = r[(r >= lo) & (r <= hi)]
+    return float(m.mean()) if m.size else float(r.mean())
+
+
+_RANK_FNS = {"sortino": _sortino, "trimmed_mean": _trimmed_mean}
+
+
+def _downside_dev(r: np.ndarray, floor_frac: float = 0.25) -> float:
+    """Downside deviation (Sortino denominator) = sqrt(mean(min(r,0)^2)), FLOORED at a fraction
+    of overall dispersion so a (near-)zero-downside sample can't blow up the bet (the same EPS
+    guard `_sortino` uses). This is the OOS-PERSISTENT risk lever (train→test Spearman ≈ +0.38,
+    orthogonal to edge — see [[babylon-edge-investigation]]); it's used for SIZING, not ranking."""
+    neg = np.minimum(r, 0.0)
+    dd = float(np.sqrt(np.mean(neg * neg))) if r.size else 0.0
+    return max(dd, floor_frac * float(r.std()) + 1e-9)
+
+
+def tail_aware_notionals(
+    returns_by_wallet: dict[str, np.ndarray], *, base_notional: float, kelly_frac: float = 1.0,
+    ratio_cap: float = 3.0, max_notional: float | None = None,
+) -> dict[str, float]:
+    """Per-event tranche notional for each (selected) wallet, sized by tail-aware fractional
+    Kelly: `base · kelly_frac · clamp(trimmed_mean / downside_dev, 0, ratio_cap)`.
+
+    Size = fractional Kelly = trimmed_mean / downside-deviation. The numerator is the SAME
+    trimmed-mean edge stat used for selection, so size is EDGE-PROPORTIONAL by design — a bigger
+    edge bets more. This is NOT a pure risk tilt / re-scaling that leaves the edge ranking alone;
+    edge enters the size directly. The downside-deviation denominator is the OOS-persistent risk
+    lever (bet LESS on a wallet whose same edge carries a fatter LEFT tail). `kelly_frac` (<1) is
+    the fractional-Kelly drawdown scalar; `ratio_cap` bounds the mu/σ multiplier and `max_notional`
+    caps the per-event size, so a thin-sample low-downside wallet can't dominate the book. Wallets
+    with a non-positive trimmed mean get 0 (they shouldn't be in the roster). The ledger's
+    gross/per-coin caps bound the BOOK; this sizes a single event."""
+    out: dict[str, float] = {}
+    for w, r in returns_by_wallet.items():
+        a = np.asarray(r, dtype=np.float64)
+        mu = _trimmed_mean(a)
+        if mu <= 0.0 or a.size == 0:
+            out[w] = 0.0
+            continue
+        ratio = min(mu / _downside_dev(a), ratio_cap)
+        n = base_notional * kelly_frac * ratio
+        out[w] = min(n, max_notional) if max_notional is not None else n
+    return out
+
+
 def select_roster(
     returns_by_wallet: dict[str, np.ndarray], cutoff_tids: dict[str, int], *,
     top_quintile_frac: float = 0.2, min_positions: int = 6, max_wallet_frac: float = 0.05,
     max_roster_size: int | None = None, activity_by_wallet: dict[str, int] | None = None,
+    rank_stat: str = "sortino",
 ) -> tuple[list[str], dict[str, float], dict[str, int]]:
     """Rank by SORTINO of the followable return (mean/downside-deviation; see _sortino), take
     the top `top_quintile_frac` (capped at `max_roster_size`), weight by frozen fractional-Kelly.
@@ -75,7 +132,8 @@ def select_roster(
                     for w, r in returns_by_wallet.items() if len(r) >= min_positions}
     if not eligible:
         return [], {}, {}
-    ranked = sorted(eligible, key=lambda w: -_sortino(eligible[w]))
+    rank_fn = _RANK_FNS[rank_stat]
+    ranked = sorted(eligible, key=lambda w: -rank_fn(eligible[w]))
     q = max(1, int(len(ranked) * top_quintile_frac))
     if max_roster_size is not None:
         q = min(q, max_roster_size)
@@ -112,16 +170,22 @@ class RollScheduler:
         # cache holds ONE wallet's fills at a time (the whole pool at once OOMs a small box)
         returns: dict[str, np.ndarray] = {}
         cutoffs: dict[str, int] = {}
-        activity: dict[str, int] | None = {} if self._activity_fn is not None else None
+        # The raw-activity gate is the round-trip disposition-bias fix. The markout signal scores
+        # OPENS (disposition-free), so it gates purely on the OPEN count (len(returns) ≥
+        # min_positions = the validated min_train) via select_roster's no-activity branch — no raw
+        # gate, which keeps live ≡ the validated study.
+        use_activity = self._activity_fn is not None and self._config.selection_signal != "markout"
+        activity: dict[str, int] | None = {} if use_activity else None
         for w in self._candidates:
             returns[w] = self._returns_fn(w, t0_ms)
             cutoffs[w] = self._cutoff_fn(w, t0_ms)
-            if self._activity_fn is not None and activity is not None:
-                activity[w] = self._activity_fn(w, t0_ms)
+            if use_activity and activity is not None:
+                activity[w] = self._activity_fn(w, t0_ms)  # type: ignore[misc]
         roster, weights, cut = select_roster(
             returns, cutoffs, top_quintile_frac=self._tqf,
             min_positions=self._config.min_positions, max_wallet_frac=self._config.max_wallet_frac,
-            max_roster_size=self._max_roster, activity_by_wallet=activity)
+            max_roster_size=self._max_roster, activity_by_wallet=activity,
+            rank_stat=self._config.selection_rank)
         if not roster:
             raise ValueError(f"roll @ T0={t0_ms} selected an empty roster — no eligible wallets")
         manifest = RunManifest.build(

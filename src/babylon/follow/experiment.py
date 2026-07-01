@@ -63,6 +63,31 @@ class ExperimentConfig:
     maxdd_bound: float           # negative
     max_single_contrib_frac: float
     cost_floor_bps: float        # the realistic round-trip cost; MAR must clear it
+    # --- selection signal (default = the original round-trip path; "markout" = the validated
+    #     fixed-horizon edge, see audit/EDGE_INVESTIGATION.md). SELECTION-only: cannot fake a GO.
+    selection_signal: str = "roundtrip"   # "roundtrip" | "markout"
+    markout_horizon_ms: int = 0           # fixed-horizon window (markout only); 6h = 21_600_000
+    selection_rank: str = "sortino"       # "sortino" | "trimmed_mean"
+    # EXECUTOR entry delay after detecting a wallet's open — DECOUPLED from `lag_bucket_ms`
+    # (which is the conservative SELECTION + GATE measurement lag). Default 0 = enter as soon as
+    # detected; the real entry lag then emerges from the rate-limited poll sweep (~1.05s/wallet →
+    # ~30-60s across the roster ≈ the study's 60s column). We execute as fast as viable but still
+    # SELECT/JUDGE at the conservative 15-min mark; realized fills reveal if fast entry pays.
+    entry_lag_ms: int = 0
+    # harvest execution (markout only): fractional-Kelly scalar for tail-aware per-event sizing
+    # (bet ∝ trimmed_mean / downside_dev · this). <1 controls drawdown; the validated lever.
+    harvest_kelly_frac: float = 0.5
+    # per-event base notional as a FRACTION of the book (decoupled from target_notional_usd, a
+    # per-position legacy number). Small so the tail-aware ratio lands BELOW the per-coin cap →
+    # the risk differentiation actually shows instead of all events clamping to the cap.
+    harvest_base_frac: float = 0.01
+    # gate CI knobs — PRE-REGISTERED (hashed into the run) so they can't be tuned post-hoc to
+    # collapse the interval into a fake GO. `gate_boot_seed`/`gate_n_boot` drive the edge-over-field
+    # cluster bootstrap; `gate_block` is the circular block length for the realized-net-PnL
+    # bootstrap (harvests are serially correlated → i.i.d. resampling would understate its CI).
+    gate_boot_seed: int = 0
+    gate_n_boot: int = 2000
+    gate_block: int = 10
 
     def validate(self) -> None:
         assert self.execution in ("retail", "validator")
@@ -71,6 +96,7 @@ class ExperimentConfig:
         assert 0 < self.gross_target <= 5
         assert 0 < self.max_coin_frac <= 1 and 0 < self.max_wallet_frac <= 1
         assert self.lag_bucket_ms >= 0 and self.fee_bps >= 0 and self.impact_bps >= 0
+        assert self.entry_lag_ms >= 0, "executor entry delay cannot be negative"
         assert 0 < self.max_depth_frac <= 1 and self.target_notional_usd > 0
         assert self.primary_control == "pool_mean", "primary control must be the pool-mean null"
         assert self.min_n_nominal >= 1 and self.min_effective_n >= 1
@@ -82,6 +108,14 @@ class ExperimentConfig:
         assert math.isfinite(self.beta)
         # economic floor: a GO must clear realistic cost by a real margin
         assert self.cost_floor_bps >= 0 and self.mar_bps >= 1.0, "MAR must be a real ≥1bp margin"
+        assert self.selection_signal in ("roundtrip", "markout")
+        assert self.selection_rank in ("sortino", "trimmed_mean")
+        if self.selection_signal == "markout":
+            assert self.markout_horizon_ms > 0, "markout signal needs a positive horizon_ms"
+        assert 0 < self.harvest_kelly_frac <= 1, "fractional-Kelly scalar must be in (0, 1]"
+        assert 0 < self.harvest_base_frac <= 1, "harvest base fraction must be in (0, 1]"
+        assert self.gate_n_boot >= 200, "gate bootstrap needs ≥200 resamples for a stable CI"
+        assert self.gate_block >= 1, "gate block length must be ≥1"
 
     def canonical(self) -> str:
         d = asdict(self)
@@ -263,11 +297,20 @@ class Results:
     maxdd: float
     depth_capped_survives: bool
     max_single_contrib_frac: float
+    # realized net-of-cost profitability (markout gate only): block-bootstrap CI of the realized
+    # neutralized per-harvest return. Because we EXECUTE faster than we MEASURE (entry_lag_ms≈0 vs
+    # the 15-min selection/gate lag), profitability is judged on REALIZED fills — real fast
+    # execution + real cost — not the candle mark. GO requires ci_low>0 (we actually make money,
+    # not just beat a losing field). 0.0/0.0 default = roundtrip path or no realized harvests yet.
+    realized_net_ci_low: float = 0.0
+    realized_net_ci_high: float = 0.0
 
     def validate(self) -> None:
         assert self.top_minus_control_ci_low <= self.top_minus_control_ci_high, "inverted CI"
+        assert self.realized_net_ci_low <= self.realized_net_ci_high, "inverted realized-net CI"
         assert self.n_effective >= 0 and self.n_nominal >= 0
-        for x in (self.top_minus_control_ci_low, self.top_minus_control_ci_high, self.maxdd):
+        for x in (self.top_minus_control_ci_low, self.top_minus_control_ci_high, self.maxdd,
+                  self.realized_net_ci_low, self.realized_net_ci_high):
             assert math.isfinite(x)
 
 
@@ -324,12 +367,25 @@ def _rule(cfg: ExperimentConfig, r: Results) -> Verdict:
     if r.max_single_contrib_frac > cfg.max_single_contrib_frac:
         reasons.append(f"single wallet/coin supplies {r.max_single_contrib_frac:.0%} of the "
                        f"spread (> {cfg.max_single_contrib_frac:.0%} cap)")
+    markout = cfg.selection_signal == "markout"
+    if markout and r.realized_net_ci_high < 0:
+        reasons.append("realized net-of-cost PnL CI entirely < 0: unprofitable after real "
+                       "execution cost (beats a losing field but still loses money)")
     if reasons:
         return Verdict("NO_GO", tuple(reasons))
-    if r.top_minus_control_ci_low >= cfg.mar_bps:
+    selection_pass = r.top_minus_control_ci_low >= cfg.mar_bps
+    profit_pass = (not markout) or r.realized_net_ci_low > 0.0
+    if selection_pass and profit_pass:
+        note = ("; realized net-of-cost CI lower bound "
+                f"+{r.realized_net_ci_low:.1f}bp > 0" if markout else "")
         return Verdict("GO", (
             f"top−control CI lower bound +{r.top_minus_control_ci_low:.1f}bp ≥ MAR "
-            f"+{cfg.mar_bps:.1f}bp; beats pool-mean; survives depth cap; DD within bound",))
+            f"+{cfg.mar_bps:.1f}bp; beats pool-mean; survives depth cap; DD within bound" + note,))
+    if selection_pass and not profit_pass:
+        return Verdict("INCONCLUSIVE", (
+            f"selection edge clears MAR (+{r.top_minus_control_ci_low:.1f}bp) but realized "
+            f"net-of-cost CI [{r.realized_net_ci_low:.1f}, {r.realized_net_ci_high:.1f}]bp does "
+            "not exclude 0: profitability not yet proven → no capital",))
     return Verdict("INCONCLUSIVE", (
         f"CI lower bound +{r.top_minus_control_ci_low:.1f}bp < MAR +{cfg.mar_bps:.1f}bp "
         "(straddles): underpowered, NOT a pass → no capital",))

@@ -93,6 +93,10 @@ class FollowRunner:
         self._cash = Decimal(str(budget_usd))     # paper cash; fills book their cashflow
         self._funding_pnl = Decimal(0)            # cumulative funding carry (in cash already)
 
+    @property
+    def n_roster(self) -> int:
+        return len(self._weights)
+
     def on_book(self, coin: str, book: Book, ts: int) -> None:
         """Feed a live L2 book update; ``ts`` is the snapshot's EXCHANGE wall-clock ms."""
         self._books[coin] = (book, ts)

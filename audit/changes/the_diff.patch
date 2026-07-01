@@ -1,0 +1,129 @@
+diff --git a/src/babylon/follow/followable.py b/src/babylon/follow/followable.py
+index 1b63892..a4a4e7a 100644
+--- a/src/babylon/follow/followable.py
++++ b/src/babylon/follow/followable.py
+@@ -22,6 +22,7 @@ from babylon.follow.skill import (
+     WalletSkill,
+     _basket_ret_bps,
+     _positions_for,
++    open_events,
+ )
+ 
+ 
+@@ -124,6 +125,53 @@ def followable_returns(
+     return np.asarray(bps, dtype=np.float64)
+ 
+ 
++def markout_returns(
++    df: pl.DataFrame, *, universe: set[str],
++    lookups: dict[str, tuple[np.ndarray, np.ndarray]], lag_ms: int, horizon_ms: int,
++    before_ms: int | None = None, basket: tuple[np.ndarray, np.ndarray] | None = None,
++    beta: float = 1.0, taker_only: bool = True, conviction_only: bool = True,
++    drop_leading: bool = False,
++) -> np.ndarray:
++    """Per-ENTRY FIXED-HORIZON markout returns (bps) — the validated selection signal
++    (see audit/EDGE_INVESTIGATION.md). For every position OPENING, mark the neutralized return
++    from ``entry_t + lag_ms`` to ``entry_t + lag_ms + horizon_ms`` at candle close — regardless of
++    when the wallet closes. This keeps never-closers and carries NO open/closed disposition bias,
++    unlike ``followable_returns`` (round-trip, which the study showed yields no edge).
++
++    ``before_ms`` seam guard: include only entries whose FULL markout window finished before T0
++    (``entry+lag+horizon < before_ms``), so a window straddling T0 can't leak into training.
++    ``drop_leading`` excludes the first (startPos-seed-suspect) open per coin (Audit 11 sensitivity).
++    ``basket=None`` ⇒ directional; pass a basket for the deployed NEUTRALIZED signal."""
++    bps: list[float] = []
++    for (coin,), g in df.sort("time").group_by("coin", maintain_order=True):
++        c = str(coin)
++        if c not in universe or c not in lookups:
++            continue
++        lookup = lookups[c]
++        g = g.sort("time")
++        for e in open_events(
++            g["time"].to_numpy(), g["px"].to_numpy(), g["sz"].to_numpy(),
++            g["side"].to_numpy(), g["crossed"].to_numpy(), g["startPosition"].to_numpy(),
++            g["hash"].to_numpy() if "hash" in g.columns else None,
++        ):
++            if (taker_only and not e.taker_open) or (conviction_only and not e.conviction):
++                continue
++            if drop_leading and e.is_leading:
++                continue
++            end = e.entry_t + lag_ms + horizon_ms
++            if before_ms is not None and end >= before_ms:
++                continue  # seam guard: full markout window must finish before T0
++            ein = _close_at(lookup, e.entry_t + lag_ms)
++            eout = _close_at(lookup, end)
++            if ein is None or eout is None:
++                continue
++            raw = e.direction * (eout / ein - 1.0) * 1e4
++            if basket is not None:
++                raw -= e.direction * beta * _basket_ret_bps(basket, e.entry_t + lag_ms, end)
++            bps.append(raw)
++    return np.asarray(bps, dtype=np.float64)
++
++
+ def rank_followable(
+     fills_dir: Path, start_ms: int, end_ms: int, *,
+     universe: set[str], lookups: dict[str, tuple[np.ndarray, np.ndarray]],
+diff --git a/src/babylon/follow/skill.py b/src/babylon/follow/skill.py
+index 06ff508..e25f39a 100644
+--- a/src/babylon/follow/skill.py
++++ b/src/babylon/follow/skill.py
+@@ -129,6 +129,58 @@ def _positions_for(coin_group: pl.DataFrame) -> list[Position]:
+     )
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class OpenEvent:
++    entry_t: int
++    direction: int       # +1 long / -1 short
++    taker_open: bool     # opening fill crossed the spread (conviction)
++    conviction: bool     # opening fill has a real hash (not TWAP/liquidation)
++    is_leading: bool     # first open per coin, BEFORE any observed close (startPos-seed suspect)
++    notional: float      # |opening fill| * px — the bet size at entry
++
++
++def open_events(
++    times: np.ndarray, px: np.ndarray, sz: np.ndarray, side: np.ndarray,
++    crossed: np.ndarray, startpos: np.ndarray | None = None,
++    hashes: np.ndarray | None = None,
++) -> list[OpenEvent]:
++    """One event per POSITION OPENING (flat→position or flip) for one coin — the SINGLE source of
++    truth shared by live selection (followable.markout_returns) and the offline study (selci_fh),
++    so live ≡ validated by construction. Adds (same-side scale-in) do NOT emit (one entry signal
++    per position). The flat-state machine is bit-for-bit identical to ``reconstruct``; ``is_leading``
++    flags the first open before any observed close (the startPosition=0 seed artifact, Audit 11),
++    surfaced WITHOUT dropping never-closers."""
++    signed = np.where(side == "B", sz, -sz)
++    ev: list[OpenEvent] = []
++    def _conv(i: int) -> bool:
++        return hashes is None or str(hashes[i]) != ZERO_HASH
++    pos = float(startpos[0]) if startpos is not None and startpos.size else 0.0
++    maxabs = abs(pos)
++    tol = max(_REL_TOL * maxabs, 1e-15)
++    seen_close = False
++    for i in range(times.size):
++        d = float(signed[i])
++        maxabs = max(maxabs, abs(pos + d))
++        tol = max(_REL_TOL * maxabs, 1e-15)
++        if pos == 0.0 or (d > 0) == (pos > 0):              # opening (from flat) or adding same side
++            if pos == 0.0:                                  # NEW position from flat
++                ev.append(OpenEvent(int(times[i]), 1 if d > 0 else -1,
++                                    bool(crossed[i]), _conv(i), not seen_close, abs(d) * float(px[i])))
++            pos += d
++        else:                                               # opposite sign → closing (maybe a flip)
++            close = min(abs(d), abs(pos))
++            pos += close if pos < 0 else -close
++            if abs(pos) < tol:                              # position closed
++                seen_close = True
++                pos = 0.0
++                leftover = abs(d) - close
++                if leftover > tol:                          # flip → open the opposite side (clean)
++                    ev.append(OpenEvent(int(times[i]), 1 if d > 0 else -1, bool(crossed[i]),
++                                        _conv(i), False, leftover * float(px[i])))
++                    pos = leftover if d > 0 else -leftover
++    return ev
++
++
+ def wallet_skill(
+     wallet: str, df: pl.DataFrame, *,
+     universe: set[str], basket: tuple[np.ndarray, np.ndarray] | None,
