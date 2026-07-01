@@ -37,6 +37,16 @@ def test_block_bootstrap_ci_separates_signal_from_noise():
     assert zero[0] < pos[0]                # noise shows no comparable lower-bound edge
 
 
+def test_block_bootstrap_ci_nondegenerate_when_block_ge_n():
+    # regression (B6): with block >= n every circular resample is a full cyclic rotation (a
+    # permutation) → identical mean every draw → CI collapses to [mean, mean], a spurious
+    # zero-width "significant" interval. Capping block at n-1 must give a real, non-zero width.
+    for n in (2, 3, 5, 8, 10):
+        x = np.linspace(4.0, 6.0, n)          # varied, all positive
+        lo, hi = block_bootstrap_ci(x, block=10, n_boot=2000, seed=0)   # block > n
+        assert hi > lo, f"n={n}: CI collapsed to a point [{lo}, {hi}]"
+
+
 def test_effective_n_drops_with_autocorrelation():
     rng = np.random.default_rng(1)
     iid = rng.normal(0, 1, 2000)

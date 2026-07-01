@@ -38,7 +38,11 @@ def block_bootstrap_ci(
     n = x.size
     if n == 0:
         return (0.0, 0.0)
-    block = max(1, min(block, n))
+    # block must stay STRICTLY below n: at block==n every circular resample is a full cyclic
+    # rotation of the whole series (a permutation), so every draw has the same mean and the CI
+    # collapses to a zero-width point [mean, mean] — a spurious "significant" interval on tiny n.
+    # Capping at n-1 forces >=2 blocks (nb>=2) so the interval carries real resampling variance.
+    block = max(1, min(block, n - 1))
     nb = int(np.ceil(n / block))
     offs = np.arange(block)
     rng = np.random.default_rng(seed)

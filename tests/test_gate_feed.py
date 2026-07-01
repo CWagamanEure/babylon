@@ -135,6 +135,44 @@ def test_assemble_results_realized_net_ci_profitability_leg():
     assert none.realized_net_ci_low == 0.0 and none.realized_net_ci_high == 0.0
 
 
+def test_assemble_results_min_harvest_floor_blocks_lucky_few():
+    # regression (B6): the block bootstrap collapses to a zero-width CI for n <= gate_block, so a
+    # handful of lucky positive harvests would fabricate ci_low>0. Below 3*gate_block harvests the
+    # profitability leg must stay unproven (0,0), not a spurious pass.
+    cfg = _cfg(min_n_nominal=1, min_effective_n=1, gate_block=10)   # floor = max(20, 30) = 30
+    roster = {f"w{i}": np.array([200.0]) for i in range(20)}
+    field = {**roster, **{f"f{i}": np.array([0.0]) for i in range(20)}}
+    for n in (2, 5, 10, 29):
+        r = assemble_results(roster, field, realized_net=np.full(n, 50.0),
+                             depth_capped_survives=True, config=cfg)
+        assert r.realized_net_ci_low == 0.0 and r.realized_net_ci_high == 0.0, f"n={n} passed"
+    # at the floor it engages
+    ok = assemble_results(roster, field, realized_net=np.full(30, 50.0),
+                          depth_capped_survives=True, config=cfg)
+    assert ok.realized_net_ci_low > 0
+
+
+def test_assemble_results_min_wallet_floor_clamps_thin_field():
+    # regression (B6): a 1-2 wallet arm gives the cluster bootstrap zero sampling variance → a
+    # spuriously tight, passable eof CI. Below the floor the selection leg is clamped to non-sig.
+    cfg = _cfg(min_n_nominal=1, min_effective_n=1)
+    roster = {"a": np.array([200.0]), "b": np.array([200.0])}      # 2 wallets
+    field = {"x": np.array([0.0]), "y": np.array([0.0])}           # 2 wallets → underpowered
+    r = assemble_results(roster, field, realized_net=np.array([]),
+                         depth_capped_survives=True, config=cfg)
+    assert r.top_minus_control_ci_low <= 0.0 and not r.top_vs_poolmean_significant
+
+
+def test_realized_journal_load_dedupes_by_id(tmp_path):
+    # regression (B4/B1): a crash between journal-write and checkpoint re-exits the tranche on
+    # resume and appends a SECOND line for the same id. load() must keep the first, drop the dupe.
+    j = RealizedJournal(tmp_path / "realized.jsonl")
+    j.append([_rt(wallet="a", coin="BTC", entry_ms=0, raw_bps=50.0)])
+    j.append([_rt(wallet="a", coin="BTC", entry_ms=0, raw_bps=999.0)])   # same id, distorted resume
+    loaded = j.load()
+    assert len(loaded) == 1 and loaded[0].raw_bps == 50.0                # original wins
+
+
 # ── field arm construction from fills (train eligibility + forward window) ─────────────────────
 def _rise_lookup():
     times = 200 * H + np.arange(-8, 9) * H

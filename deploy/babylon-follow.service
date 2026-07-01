@@ -1,21 +1,26 @@
 [Unit]
-Description=Babylon forward copy-trade paper experiment
+Description=Babylon forward copy-trade paper experiment (markout harvest — the VALIDATED strategy)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=/root/bablyon
-# Resumes the committed roster from the registry on restart (no re-roll); the checkpoint
-# restores positions. The very first start rolls + registers the immutable manifest.
-# --fills-dir: rank from local fills + candles (instant roll, no REST prefetch). Live
-# positions + books are still real-time. (Reroll freshness: refresh local fills before
-# the first 14-day reroll, or switch rerolls to REST.)
-ExecStart=/root/.local/bin/uv run python -m babylon.follow.main --fills-dir data/follow/fills
-Restart=on-failure
+# MUST pass --selection markout: the default is "roundtrip", which the edge investigation proved
+# to be a disposition-bias NULL (audit/EDGE_INVESTIGATION.md). Omitting the flag silently paper-
+# trades the dead strategy and any GO/NO-GO read on it is meaningless. This unit mirrors the live
+# droplet service (systemctl cat babylon-markout).
+# Resumes the committed roster from the registry on restart (no re-roll); the checkpoint restores
+# positions. The very first start rolls + registers the immutable manifest. --fills-dir ranks from
+# local fills + candles (instant roll, no REST prefetch); live positions + books stay real-time.
+# --roll-chunk drives the chunked-subprocess selection so the roll stays RAM-safe on a 1GB box.
+ExecStart=/root/bablyon/.venv/bin/python -m babylon.follow.main --selection markout \
+  --fills-dir data/follow/fills_his --candidates data/follow/markout_candidates.csv \
+  --budget 1000 --max-roster 50 --roll-chunk 80 --state-dir data/follow/markout_live
+Restart=always
 RestartSec=30
-StandardOutput=append:/root/bablyon/data/follow/live/run.log
-StandardError=append:/root/bablyon/data/follow/live/run.log
+StandardOutput=append:/root/bablyon/data/follow/markout_live.log
+StandardError=append:/root/bablyon/data/follow/markout_live.log
 
 [Install]
 WantedBy=multi-user.target

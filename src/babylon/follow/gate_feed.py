@@ -44,6 +44,9 @@ from babylon.follow.measure import (
     single_contrib_frac,
 )
 from babylon.follow.skill import _basket_ret_bps
+from babylon.logging import get_logger
+
+log = get_logger("follow.gate_feed")
 
 Lookups = dict[str, tuple[np.ndarray, np.ndarray]]
 Basket = tuple[np.ndarray, np.ndarray] | None
@@ -68,10 +71,24 @@ class RealizedJournal:
                 f.write(json.dumps(asdict(r)) + "\n")
 
     def load(self) -> list[RealizedRoundTrip]:
+        """Read the durable harvest log, DEDUPED by tranche id (first write wins). `append` is
+        at-least-once: a crash between the journal write and the next checkpoint re-exits the
+        (checkpoint-still-OPEN) tranche on resume and writes a SECOND, distorted-horizon line for
+        the same id. Deduping on read keeps the original 6h harvest and drops the resume artifact,
+        so the profitability CI + maxDD bound aren't double-counted."""
         if not self._path.exists():
             return []
-        return [RealizedRoundTrip(**json.loads(ln))
-                for ln in self._path.read_text().splitlines() if ln.strip()]
+        out: list[RealizedRoundTrip] = []
+        seen: set[str] = set()
+        for ln in self._path.read_text().splitlines():
+            if not ln.strip():
+                continue
+            rt = RealizedRoundTrip(**json.loads(ln))
+            if rt.id in seen:
+                continue
+            seen.add(rt.id)
+            out.append(rt)
+        return out
 
 
 # ── candle-markout arms (the SYMMETRIC estimator: same ruler on TOP and CONTROL) ──────────────
@@ -208,6 +225,9 @@ def results_hash(r: Results) -> str:
 
 
 # ── assemble Results + run the read-once decision ─────────────────────────────────────────────
+_MIN_ARM_WALLETS = 3   # cluster bootstrap can't estimate an arm's sampling error from 1-2 wallets
+
+
 def assemble_results(
     roster_mk: dict[str, np.ndarray], field_mk: dict[str, np.ndarray], *,
     realized_net: np.ndarray, depth_capped_survives: bool, config: ExperimentConfig,
@@ -226,8 +246,22 @@ def assemble_results(
             "refusing to score a positive TOP against an absent field")
     _point, lo, hi = cluster_boot_eof(
         roster_mk, field_mk, n_boot=config.gate_n_boot, seed=config.gate_boot_seed)
+    # Min-wallet floor: a 1-2 wallet arm makes the cluster bootstrap resample a constant (nf==1 →
+    # always index [0]) → ZERO field/roster sampling variance → a spuriously tight, passable eof
+    # CI on ~no data. Below the floor the selection leg is underpowered, not proven — clamp the
+    # lower bound to <=0 so it can never clear a positive MAR (INCONCLUSIVE, never a fabricated GO).
+    n_roster_w = sum(1 for a in roster_mk.values() if a.size)
+    n_field_w = sum(1 for a in field_mk.values() if a.size)
+    if n_roster_w < _MIN_ARM_WALLETS or n_field_w < _MIN_ARM_WALLETS:
+        log.warning("gate.eof_underpowered", roster_wallets=n_roster_w, field_wallets=n_field_w,
+                    min=_MIN_ARM_WALLETS)
+        lo = min(lo, 0.0)
     rn = np.asarray(realized_net, dtype=np.float64)
-    if rn.size >= 2:
+    # Min-harvest floor: the realized block-bootstrap needs n >> block or its CI degenerates
+    # (see block_bootstrap_ci). Require >= 3*block harvests before the profitability leg can pass;
+    # below it, profitability is unproven → (0,0), never a spurious ci_low>0 from 2 lucky fills.
+    min_harvests = max(20, 3 * config.gate_block)
+    if rn.size >= min_harvests:
         rlo, rhi = block_bootstrap_ci(rn, block=config.gate_block, n_boot=config.gate_n_boot,
                                       seed=config.gate_boot_seed)
     else:
