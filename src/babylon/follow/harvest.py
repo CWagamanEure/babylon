@@ -76,17 +76,26 @@ class HarvestLedger:
     def __init__(
         self, *, entry_lag_ms: int, horizon_ms: int,
         max_coin_notional: float | None = None, max_gross_notional: float | None = None,
-        min_tranche_notional: float = 0.0,
+        min_tranche_notional: float = 0.0, max_entry_lag_ms: int = 0,
     ) -> None:
-        assert horizon_ms > 0 and entry_lag_ms >= 0
+        assert horizon_ms > 0 and entry_lag_ms >= 0 and max_entry_lag_ms >= 0
         self._entry_lag_ms = entry_lag_ms
         self._horizon_ms = horizon_ms
         self._max_coin = max_coin_notional
         self._max_gross = max_gross_notional
         self._min_tranche = min_tranche_notional
+        # a PENDING tranche that can't enter within this long past its target (chronically stale
+        # book) is CANCELLED, not held: entering hours late would harvest a contaminated window,
+        # and holding it forever leaks memory + reserves cap room. 0 = disabled (no deadline).
+        self._max_entry_lag_ms = max_entry_lag_ms
         self._tranches: dict[str, Tranche] = {}
         self._open_event_ms: dict[str, int] = {}     # id -> the originating open-event time
         self._realized: list[RealizedRoundTrip] = []
+        # coverage counters (cumulative, survive resume) — the DENOMINATOR the gate never saw: how
+        # many detected opens actually harvested vs were dropped by cap or entry-staleness.
+        self._n_registered = 0                       # opens registered as tranches
+        self._n_capped = 0                           # dropped: cap left < min_tranche room
+        self._n_entry_expired = 0                    # dropped: never entered before the deadline
 
     # ── ingest ────────────────────────────────────────────────────────────────────────────
     def on_open_event(
@@ -103,6 +112,7 @@ class HarvestLedger:
             id=event_id, wallet=wallet, coin=coin, direction=direction, notional=float(notional),
             entry_target_ms=open_event_ms + self._entry_lag_ms)
         self._open_event_ms[event_id] = open_event_ms
+        self._n_registered += 1
         return True
 
     # ── entry side ────────────────────────────────────────────────────────────────────────
@@ -119,6 +129,14 @@ class HarvestLedger:
         coin_exposed = {c: self.coin_open_notional(c) for c in {t.coin for t in due}}
         approved: list[Tranche] = []
         for t in due:
+            # stale-entry deadline: if this open never entered within max_entry_lag of its target
+            # (chronically stale book), cancel it — a late entry harvests a contaminated window.
+            if self._max_entry_lag_ms and now_ms - t.entry_target_ms > self._max_entry_lag_ms:
+                t.state = TrancheState.CANCELLED
+                self._n_entry_expired += 1
+                log.info("harvest.entry_expired", id=t.id, coin=t.coin,
+                         late_ms=now_ms - t.entry_target_ms)
+                continue
             room = t.notional
             if self._max_coin is not None:
                 room = min(room, max(0.0, self._max_coin - coin_exposed.get(t.coin, 0.0)))
@@ -126,6 +144,7 @@ class HarvestLedger:
                 room = min(room, max(0.0, self._max_gross - gross))
             if room < self._min_tranche or room <= 0.0:
                 t.state = TrancheState.CANCELLED
+                self._n_capped += 1
                 log.info("harvest.tranche_capped_out", id=t.id, coin=t.coin,
                          wanted=t.notional, room=room)
                 continue
@@ -199,6 +218,16 @@ class HarvestLedger:
     def open_tranches(self) -> list[Tranche]:
         return [t for t in self._tranches.values() if t.state is TrancheState.OPEN]
 
+    def coverage(self) -> dict[str, int]:
+        """The gate's missing DENOMINATOR: registered opens vs those dropped by cap/entry-staleness,
+        and how many are still stuck PENDING (book never fresh) or OPEN past when they should exit.
+        A high dropped/stuck fraction means the harvested sample is a biased subset of conviction
+        opens — surfaced so silent coverage collapse can't read as 'measured everything'."""
+        pending = sum(1 for t in self._tranches.values() if t.state is TrancheState.PENDING_ENTRY)
+        return {"registered": self._n_registered, "capped": self._n_capped,
+                "entry_expired": self._n_entry_expired, "pending": pending,
+                "open": len(self.open_tranches())}
+
     @property
     def realized(self) -> list[RealizedRoundTrip]:
         return self._realized
@@ -221,6 +250,8 @@ class HarvestLedger:
             "open_event_ms": {t.id: self._open_event_ms[t.id]
                               for t in live if t.id in self._open_event_ms},
             "realized": [asdict(r) for r in self._realized],
+            "coverage": {"registered": self._n_registered, "capped": self._n_capped,
+                         "entry_expired": self._n_entry_expired},
         }
 
     def from_state(self, st: dict[str, Any]) -> None:
@@ -232,6 +263,10 @@ class HarvestLedger:
             self._tranches[t.id] = t
         self._open_event_ms = {k: int(v) for k, v in st.get("open_event_ms", {}).items()}
         self._realized = [RealizedRoundTrip(**r) for r in st.get("realized", [])]
+        cov = st.get("coverage", {})
+        self._n_registered = int(cov.get("registered", 0))
+        self._n_capped = int(cov.get("capped", 0))
+        self._n_entry_expired = int(cov.get("entry_expired", 0))
 
     def prune_closed(self, ids: Iterable[str] | None = None) -> int:
         """Drop CLOSED/CANCELLED tranches (bounded memory on a long run). Without `ids`, prunes

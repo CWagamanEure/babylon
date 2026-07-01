@@ -55,6 +55,36 @@ def test_min_tranche_still_caps_dust():
     assert led.due_entries(LAG) == []                             # dust still capped
 
 
+def test_entry_deadline_cancels_stale_pending():
+    # a PENDING that can't enter within max_entry_lag of its target is cancelled (contaminated
+    # window + leak), and counted in coverage — not held forever.
+    led = _ledger(max_entry_lag_ms=1000)
+    led.on_open_event(event_id="e", wallet="w", coin="BTC", direction=1,
+                      notional=10.0, open_event_ms=0)                 # entry_target = LAG
+    assert led.due_entries(LAG + 2000) == []                         # 2000 > 1000 past target
+    assert led.coverage()["entry_expired"] == 1
+
+
+def test_entry_deadline_lets_ontime_enter():
+    led = _ledger(max_entry_lag_ms=1000)
+    led.on_open_event(event_id="e", wallet="w", coin="BTC", direction=1,
+                      notional=10.0, open_event_ms=0)
+    assert [t.id for t in led.due_entries(LAG + 500)] == ["e"]       # 500 < 1000 → enters
+
+
+def test_coverage_counts_and_survives_roundtrip():
+    led = _ledger(max_gross_notional=5.0, min_tranche_notional=1.0)
+    led.on_open_event(event_id="a", wallet="w", coin="BTC", direction=1,
+                      notional=5.0, open_event_ms=0)                  # fills gross
+    led.on_open_event(event_id="b", wallet="w", coin="BTC", direction=1,
+                      notional=5.0, open_event_ms=0)                  # no room → capped
+    assert [t.id for t in led.due_entries(LAG)] == ["a"]
+    assert led.coverage()["registered"] == 2 and led.coverage()["capped"] == 1
+    led2 = _ledger()
+    led2.from_state(led.to_state())                                  # coverage is cumulative
+    assert led2.coverage()["registered"] == 2 and led2.coverage()["capped"] == 1
+
+
 def test_short_direction_bps_sign():
     led = _ledger(entry_lag_ms=0)
     led.on_open_event(event_id="s", wallet="w", coin="ETH", direction=-1, notional=500.0,

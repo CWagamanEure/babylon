@@ -146,10 +146,15 @@ class WalletWatcher:
             fs.sort(key=lambda f: (int(f["time"]), int(f["tid"])))
             for ev in open_events(
                 np.array([int(f["time"]) for f in fs], dtype=np.int64),
-                np.array([float(f["px"]) for f in fs]),
+                # px/crossed default like fills_source (crossed=taker) — a single fill missing an
+                # optional field must NOT raise here (it runs BEFORE _apply → would wedge BOTH open
+                # detection AND position tracking for the wallet, cursor never advancing → silent
+                # infinite retry). px is the wallet's own fill price (informational; we enter at the
+                # live book), so a 0.0 default can't corrupt our entry.
+                np.array([float(f.get("px", 0.0)) for f in fs]),
                 np.array([float(f["sz"]) for f in fs]),
                 np.array([str(f["side"]) for f in fs]),
-                np.array([bool(f["crossed"]) for f in fs]),
+                np.array([bool(f.get("crossed", True)) for f in fs]),
                 np.array([float(f["startPosition"]) for f in fs]),
                 np.array([str(f.get("hash", "")) for f in fs]),
                 np.array([int(f["tid"]) for f in fs], dtype=np.int64)):

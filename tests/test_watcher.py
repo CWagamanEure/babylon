@@ -62,6 +62,19 @@ def test_without_seed_replays_history():
     assert "BTC" in coins and "ETH" in coins
 
 
+def test_detect_opens_tolerates_missing_px_crossed():
+    # regression (B2): a fill missing optional px/crossed must NOT raise in _detect_opens — it runs
+    # before _apply, so a raise would wedge BOTH open detection AND position tracking for the wallet
+    # (cursor never advances → silent infinite retry). px/crossed default like fills_source.
+    bad = {"time": 1000, "coin": "BTC", "side": "B", "sz": 5.0, "startPosition": 0.0, "tid": 1}
+    captured: list = []
+    w = WalletWatcher(FakeSource([bad]), [W], min_interval_s=0.0,
+                      on_opens=lambda _wal, ops: captured.extend(ops))
+    n = _run(w.poll_wallet(W, 9999))                      # must not raise
+    assert n == 1 and w.position(W, "BTC") == 5.0         # position still tracked
+    assert [coin for coin, _ev in captured] == ["BTC"]    # open still detected
+
+
 def test_start_position_anchoring():
     # latest fill's startPosition ± sz IS the net (absolute, not a running sum)
     src = FakeSource([

@@ -81,6 +81,16 @@ class ExperimentConfig:
     # per-position legacy number). Small so the tail-aware ratio lands BELOW the per-coin cap →
     # the risk differentiation actually shows instead of all events clamping to the cap.
     harvest_base_frac: float = 0.01
+    # loosens ONLY the ledger's per-coin + gross caps (NOT tranche sizing, which stays pegged to
+    # max_coin_frac·budget) for a paper MEASUREMENT run: at a $1000 book the gross cap saturates
+    # during active periods and CANCELS later opens by arrival time, so the harvested set becomes a
+    # biased subsample of conviction opens. bps are scale-free (the gate reads bps, not $), so
+    # raising the caps lets ~every open through — unbiased coverage — without distorting the CI.
+    harvest_cap_mult: float = 1.0
+    # a PENDING harvest that can't enter within this long past its target (chronically stale book)
+    # is cancelled — a late entry harvests a contaminated window + it leaks memory/cap room.
+    # 0 = disabled. markout uses 30 min (2× the 15-min selection mark).
+    harvest_max_entry_lag_ms: int = 0
     # gate CI knobs — PRE-REGISTERED (hashed into the run) so they can't be tuned post-hoc to
     # collapse the interval into a fake GO. `gate_boot_seed`/`gate_n_boot` drive the edge-over-field
     # cluster bootstrap; `gate_block` is the circular block length for the realized-net-PnL
@@ -114,6 +124,8 @@ class ExperimentConfig:
             assert self.markout_horizon_ms > 0, "markout signal needs a positive horizon_ms"
         assert 0 < self.harvest_kelly_frac <= 1, "fractional-Kelly scalar must be in (0, 1]"
         assert 0 < self.harvest_base_frac <= 1, "harvest base fraction must be in (0, 1]"
+        assert self.harvest_cap_mult >= 1.0, "cap multiplier only loosens (>=1); never tightens"
+        assert self.harvest_max_entry_lag_ms >= 0, "entry-lag deadline cannot be negative"
         assert self.gate_n_boot >= 200, "gate bootstrap needs ≥200 resamples for a stable CI"
         assert self.gate_block >= 1, "gate block length must be ≥1"
 

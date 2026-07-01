@@ -251,19 +251,26 @@ class HarvestRunner:
                 try:
                     rep = self.step(wall_fn())
                     if rep.realized and on_realized is not None:
-                        # Delivery is at-least-once (checkpoint every N ticks): dedup by tranche id
-                        # so a crash between deliver and checkpoint can't re-deliver an already-
-                        # journaled round-trip (a duplicate TOP observation for the gate).
+                        # Delivery is at-least-once: `_delivered` dedups WITHIN a process, but it's
+                        # only made durable at the checkpoint cadence, so a crash between the write
+                        # and the next checkpoint re-exits the tranche on resume and appends a
+                        # DUPLICATE line. The durable guard is RealizedJournal.load() deduping by id
+                        # (see gate_feed); this set just avoids redundant same-process re-writes.
                         fresh = tuple(rt for rt in rep.realized if rt.id not in self._delivered)
                         if fresh:
                             on_realized(fresh)
                             self._delivered.update(rt.id for rt in fresh)
                     n += 1
                     if n % max(1, ckpt_every) == 0:
+                        cov = self._ledger.coverage()
                         log.info("harvest.status", n=n, books=len(self._books),
-                                 open_tranches=len(self._ledger.open_tranches()),
+                                 open_tranches=cov["open"], pending=cov["pending"],
                                  gross=round(self._ledger.gross_open_notional(), 1),
-                                 equity=round(self.equity(), 2))
+                                 equity=round(self.equity(), 2),
+                                 # coverage denominator: harvested vs dropped (cap/stale)
+                                 registered=cov["registered"], capped=cov["capped"],
+                                 entry_expired=cov["entry_expired"])
+                        self._ledger.prune_closed()      # bound memory: drop terminal tranches
                         if ckpt_path is not None:
                             self.checkpoint(ckpt_path)
                 except Exception as exc:  # noqa: BLE001 — one bad tick must not kill the run

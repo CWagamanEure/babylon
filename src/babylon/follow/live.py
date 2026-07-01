@@ -128,11 +128,15 @@ class LiveFollowSystem:
             # ~$10), NOT 0.02·target_notional_usd (the $1000 legacy per-position number → a $20
             # floor that capped out EVERY tail-aware tranche, which run $3-15). Peg it to the base.
             harvest_base = budget_usd * config.harvest_base_frac
+            # harvest_cap_mult loosens ONLY these ledger caps (coverage), never tranche sizing
+            # (still max_coin_frac·budget, computed independently in _harvest_notionals).
+            cap_mult = config.harvest_cap_mult
             ledger = HarvestLedger(
                 entry_lag_ms=config.entry_lag_ms, horizon_ms=config.markout_horizon_ms,
-                max_coin_notional=config.max_coin_frac * budget_usd,
-                max_gross_notional=config.gross_target * budget_usd,
-                min_tranche_notional=max(1.0, 0.1 * harvest_base))
+                max_coin_notional=config.max_coin_frac * budget_usd * cap_mult,
+                max_gross_notional=config.gross_target * budget_usd * cap_mult,
+                min_tranche_notional=max(1.0, 0.1 * harvest_base),
+                max_entry_lag_ms=config.harvest_max_entry_lag_ms)
             notionals = _harvest_notionals(returns_fn, roster, config, budget_usd, t0_ms)
             runner = HarvestRunner(ledger, notionals, executor, universe=set(universe),
                                    watcher=watcher, roster=roster, budget_usd=budget_usd)

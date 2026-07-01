@@ -79,6 +79,12 @@ def locked_config(
         selection_signal="markout" if markout else "roundtrip",
         markout_horizon_ms=21_600_000 if markout else 0,           # 6 h fixed horizon
         selection_rank="trimmed_mean" if markout else "sortino",
+        # markout is a paper MEASUREMENT run: loosen the ledger caps 20× so a busy period doesn't
+        # saturate the $1000 gross and cancel later opens by arrival (biasing WHICH opens harvest).
+        # Tranche SIZING is unchanged (still max_coin_frac·budget); bps are scale-free so coverage
+        # improves without distorting the gate. round-trip keeps 1× (it's not a harvest run).
+        harvest_cap_mult=20.0 if markout else 1.0,
+        harvest_max_entry_lag_ms=1_800_000 if markout else 0,      # cancel entries >30 min stale
         fee_bps=4.5, impact_bps=6.0, max_depth_frac=0.25, target_notional_usd=1_000.0,
         primary_control="pool_mean", secondary_controls=("random", "sign_shuffle"),
         min_n_nominal=1500, min_effective_n=120, horizon_cap_days=300, mar_bps=8.0,
