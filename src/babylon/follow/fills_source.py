@@ -69,7 +69,7 @@ async def page_fills(info: _Info, wallet: str, start_ms: int, end_ms: int, *,
         if len(batch) < _PAGE_CAP:
             break
         last_t = int(batch[-1]["time"])
-        cur = last_t + 1 if last_t <= cur else last_t   # re-fetch from last_t (dedup handles overlap)
+        cur = last_t + 1 if last_t <= cur else last_t   # re-fetch from last_t (dedup handles it)
     return out
 
 
@@ -108,5 +108,9 @@ class ParquetFillsProvider:
         p = self._dir / f"{wallet}.parquet"
         if not p.exists():
             return pl.DataFrame(schema=_SCHEMA)
-        return pl.read_parquet(p).filter(
-            (pl.col("time") >= start_ms) & (pl.col("time") < end_ms))
+        # LAZY scan + predicate pushdown: read ONLY the windowed rows, not the whole file. Some
+        # whale wallets have 100-500MB of full history; read_parquet(whole).filter decompressed
+        # the lot (~3GB peak) before filtering — scan_parquet pushes the time predicate into the
+        # reader so a 30-day slice costs ~a tenth of that (fits a 1GB box).
+        return pl.scan_parquet(p).filter(
+            (pl.col("time") >= start_ms) & (pl.col("time") < end_ms)).collect()

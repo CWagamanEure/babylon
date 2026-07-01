@@ -49,6 +49,12 @@ class SelectionAdapter:
         """Swap in a fresh neutralizing basket for the next roll (markout path)."""
         self._basket = basket
 
+    def snapshot(self) -> tuple[dict[str, tuple[np.ndarray, np.ndarray]],
+                                tuple[np.ndarray, np.ndarray] | None]:
+        """Current (lookups, basket) — for the chunked-subprocess roll driver, which must pass the
+        SAME per-roll candle data to each worker so the chunked roster is bit-identical."""
+        return self._lookups, self._basket
+
     def _df(self, wallet: str, t0_ms: int) -> pl.DataFrame:
         key = (wallet, t0_ms)
         if key != self._cache_key:                 # evict the previous wallet (bound memory)

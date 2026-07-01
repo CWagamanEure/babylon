@@ -29,6 +29,11 @@ ReturnsFn = Callable[[str, int], np.ndarray]
 CutoffFn = Callable[[str, int], int]
 # (wallet, t0_ms) -> raw FILL count in the train window (the disposition-free eligibility gate)
 ActivityFn = Callable[[str, int], int]
+# (candidates, t0_ms) -> (returns, cutoffs, activity) for the WHOLE pool at once — the RAM-bounded
+# chunked-subprocess path (roll_worker.chunked_batch_returns). When set, replaces the per-wallet
+# in-process loop so a 2431-wallet roll never climbs past one chunk (fits a 1GB box).
+BatchReturnsFn = Callable[[list[str], int],
+                          tuple[dict[str, np.ndarray], dict[str, int], dict[str, int]]]
 
 
 def _sortino(r: np.ndarray) -> float:
@@ -148,13 +153,14 @@ class RollScheduler:
         self, candidates: list[str], returns_fn: ReturnsFn, cutoff_fn: CutoffFn,
         config: ExperimentConfig, registry: Registry, *, analysis_script_hash: str,
         top_quintile_frac: float = 0.2, max_roster_size: int | None = None,
-        activity_fn: ActivityFn | None = None,
+        activity_fn: ActivityFn | None = None, batch_returns_fn: BatchReturnsFn | None = None,
     ) -> None:
         config.validate()
         self._candidates = list(candidates)
         self._returns_fn = returns_fn
         self._cutoff_fn = cutoff_fn
         self._activity_fn = activity_fn      # (wallet, t0) -> raw fill count in train window
+        self._batch_fn = batch_returns_fn    # chunked-subprocess whole-pool path (RAM-bounded)
         self._config = config
         self._registry = registry
         self._analysis_hash = analysis_script_hash
@@ -166,21 +172,27 @@ class RollScheduler:
         immutable manifest, and return (roster, weights, run_id) for the runner to adopt.
         Idempotent for an identical re-selection; a different selection at the same T0 is
         refused by the registry (immutable pre-registration)."""
-        # process each wallet's returns + cutoff consecutively so a single-entry adapter
-        # cache holds ONE wallet's fills at a time (the whole pool at once OOMs a small box)
-        returns: dict[str, np.ndarray] = {}
-        cutoffs: dict[str, int] = {}
         # The raw-activity gate is the round-trip disposition-bias fix. The markout signal scores
         # OPENS (disposition-free), so it gates purely on the OPEN count (len(returns) ≥
         # min_positions = the validated min_train) via select_roster's no-activity branch — no raw
         # gate, which keeps live ≡ the validated study.
         use_activity = self._activity_fn is not None and self._config.selection_signal != "markout"
-        activity: dict[str, int] | None = {} if use_activity else None
-        for w in self._candidates:
-            returns[w] = self._returns_fn(w, t0_ms)
-            cutoffs[w] = self._cutoff_fn(w, t0_ms)
-            if use_activity and activity is not None:
-                activity[w] = self._activity_fn(w, t0_ms)  # type: ignore[misc]
+        if self._batch_fn is not None:
+            # RAM-bounded: whole pool via chunked subprocesses (each frees its memory on exit) —
+            # bit-identical roster, but peak RSS stays at one chunk (fits a 1GB box).
+            returns, cutoffs, batch_activity = self._batch_fn(self._candidates, t0_ms)
+            activity: dict[str, int] | None = batch_activity if use_activity else None
+        else:
+            # in-process: process each wallet's returns + cutoff consecutively so the adapter's
+            # single-entry cache holds ONE wallet's fills at a time (used for REST mode + tests).
+            returns = {}
+            cutoffs = {}
+            activity = {} if use_activity else None
+            for w in self._candidates:
+                returns[w] = self._returns_fn(w, t0_ms)
+                cutoffs[w] = self._cutoff_fn(w, t0_ms)
+                if use_activity and activity is not None:
+                    activity[w] = self._activity_fn(w, t0_ms)  # type: ignore[misc]
         roster, weights, cut = select_roster(
             returns, cutoffs, top_quintile_frac=self._tqf,
             min_positions=self._config.min_positions, max_wallet_frac=self._config.max_wallet_frac,

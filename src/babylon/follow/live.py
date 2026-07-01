@@ -29,6 +29,7 @@ from babylon.follow.harvest_runner import HarvestRunner
 from babylon.follow.runner import FollowRunner, attach_l2_feed
 from babylon.follow.scheduler import (
     ActivityFn,
+    BatchReturnsFn,
     CutoffFn,
     ReturnsFn,
     RollScheduler,
@@ -95,13 +96,14 @@ class LiveFollowSystem:
         t0_ms: int, budget_usd: float, registry_path: Path, checkpoint_path: Path,
         analysis_script_hash: str, poll_interval_s: float = 2.0,
         prepare: PrepareFn | None = None, max_roster_size: int | None = None,
-        activity_fn: ActivityFn | None = None,
+        activity_fn: ActivityFn | None = None, batch_returns_fn: BatchReturnsFn | None = None,
     ) -> LiveFollowSystem:
         config.validate()
         registry = Registry(registry_path)
         scheduler = RollScheduler(candidates, returns_fn, cutoff_fn, config, registry,
                                   analysis_script_hash=analysis_script_hash,
-                                  max_roster_size=max_roster_size, activity_fn=activity_fn)
+                                  max_roster_size=max_roster_size, activity_fn=activity_fn,
+                                  batch_returns_fn=batch_returns_fn)
         prior = registry.latest()
         if prior is not None:
             # RESUME the latest committed sub-period — do NOT re-roll (the registry is the

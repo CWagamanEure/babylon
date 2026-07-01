@@ -106,7 +106,7 @@ async def run_live(
     config: ExperimentConfig | None = None, t0_ms: int | None = None,
     max_roster_size: int | None = None,
     lookups: dict[str, tuple[Any, Any]] | None = None, info: object = None, feed: object = None,
-    provider: object = None,
+    provider: object = None, fills_dir: Path | None = None, roll_chunk: int = 120,
     prefetch: Callable[[list[str], int, int], Awaitable[None]] | None = None,
     refresh_lookups: object = _DEFAULT, **run_kw: object,
 ) -> LiveFollowSystem:
@@ -135,6 +135,18 @@ async def run_live(
     adapter = SelectionAdapter(provider, universe=set(universe), lookups=lookups or {},  # type: ignore[arg-type]
                                config=config, basket=basket)
     train_ms = config.train_days * _DAY_MS
+    # RAM-bounded roll: in LOCAL (parquet --fills-dir) mode, farm the 2431-wallet selection to
+    # chunked subprocesses so peak RSS stays ~one chunk (fits a 1GB box). REST mode keeps the
+    # in-process loop (a subprocess can't share the REST session). Roster is bit-identical.
+    batch_returns_fn = None
+    if fills_dir is not None:
+        from babylon.follow.roll_worker import chunked_batch_returns
+
+        def batch_returns_fn(cands: list[str], t0: int):  # noqa: ANN202
+            look, bkt = adapter.snapshot()
+            return chunked_batch_returns(
+                cands, t0, config=config, fills_dir=fills_dir, lookups=look, basket=bkt,
+                universe=set(universe), chunk_size=roll_chunk)
 
     async def prepare(t0: int) -> None:
         if refresh_lookups is not None:
@@ -157,7 +169,7 @@ async def run_live(
         system = LiveFollowSystem.build(
             config=config, candidates=candidates, universe=universe, source=info, feed=feed,  # type: ignore[arg-type]
             returns_fn=adapter.returns_fn, cutoff_fn=adapter.cutoff_fn,
-            activity_fn=adapter.activity_fn, t0_ms=t0,
+            activity_fn=adapter.activity_fn, t0_ms=t0, batch_returns_fn=batch_returns_fn,
             budget_usd=budget_usd, registry_path=registry_path, checkpoint_path=checkpoint_path,
             analysis_script_hash=analysis_hash(), prepare=prepare, max_roster_size=max_roster_size)
         log.info("live.built", run_id=system.run_id, roster=system.runner.n_roster,
@@ -219,6 +231,10 @@ def main() -> None:
                     help="rank from LOCAL fills parquets + local candles (instant roll, no "
                          "REST prefetch). Live positions + books are still real-time.")
     ap.add_argument("--state-dir", type=Path, default=Path("data/follow/live"))
+    ap.add_argument("--roll-chunk", type=int, default=120,
+                    help="wallets per roll-selection subprocess (local --fills-dir mode). Smaller "
+                         "= lower peak RSS; the 2431-pool roll stays bounded to ~one chunk so it "
+                         "fits a 1GB box. Only affects RAM/speed, not the (bit-identical) roster.")
     ap.add_argument("--max-roster", type=int, default=50,
                     help="cap the roster to the top-N by Kelly weight so it can be polled in "
                          "real time under the rate limit (0 = no cap)")
@@ -255,7 +271,8 @@ def main() -> None:
     candidates = load_candidates(cand_path, top_quintile_only=a.top_quintile_only)
     universe = load_universe(a.universe)
     # local-selection mode: parquet fills + static local candles ⇒ no REST prefetch/refetch
-    local: dict[str, Any] = dict(provider=ParquetFillsProvider(a.fills_dir), refresh_lookups=None) \
+    local: dict[str, Any] = dict(provider=ParquetFillsProvider(a.fills_dir), refresh_lookups=None,
+                                 fills_dir=a.fills_dir, roll_chunk=a.roll_chunk) \
         if a.fills_dir else {}
     log.info("live.start", n_candidates=len(candidates), n_universe=len(universe),
              dry_run=a.dry_run, testnet=a.testnet, local_fills=bool(a.fills_dir),
