@@ -1,53 +1,55 @@
-# EPISODE_SPEC — position-building episode construction
+# EPISODE_SPEC — position-building episode construction (normative, frozen)
 
-Deterministic rules. Input: per-wallet, per-coin, time-sorted fills with (ts, price, signed size, crossed-flag, liquidation-flag). Output: episode records (`DATA_SCHEMA.md`).
+Deterministic rules. Input: per-wallet, per-coin, time-sorted fills `(fill_ts, price, signed size, crossed-flag, liquidation-flag)`. Output: episode records (`DATA_SCHEMA.md`). Markout prices come from 5-min bar **closes**, never from fill prices. **Gate A is a gross post-entry markout study — it contains no latency, spread, slippage, or execution modelling** (those belong only to Gate B, `DEPLOYMENT_INPUT_FREEZE.md`).
+
+## Naming (do not overload one symbol)
+- `fill_ts` — timestamp of a fill.
+- `entry_price_ts` — the 5-min close used as the entry price (below).
+- `endpoint_price_ts` — the horizon endpoint close.
+- `simulated_fill_ts` — Gate-B only (measured detection/submission); absent from Gate A.
 
 ## Position ledger
+Signed running position `q` per (wallet, coin), avg-cost ledger. `startpos` reconstructed from **all** fills before the window (D1); any wallet whose reconstructed position is left-censored (first observed action is a from-flat reduction/flip, or reconstructed `q` implies pre-window inventory) is **quarantined** until reconciled. A fill with signed size `s`: **Increase** if `q==0` or `sign(s)==sign(q)`; **Reduce** if `sign(s)!=sign(q)` and `|s|<|q|`; **Close** if `|s|==|q|`; **Flip** if `sign(s)!=sign(q)` and `|s|>|q|`.
 
-Maintain a signed running position `q` per (wallet, coin) via the same avg-cost ledger used in prior stages. A fill with signed size `s`:
+## Entry-price convention (item 2 — frozen; 0–5 min bar-resolution lag, NOT copy latency)
+5-min close timestamps lie on the UTC close lattice (multiples of 5 min). For a fill at `fill_ts = f`:
 
-- **Increase** if `q == 0` or `sign(s) == sign(q)` (open or add).
-- **Reduce** if `sign(s) != sign(q)` and `|s| < |q|`.
-- **Close** if `|s| == |q|` → flat.
-- **Flip** if `sign(s) != sign(q)` and `|s| > |q|` → residual opens the opposite side.
+  entry_price_ts(f) = min { c : c a 5-min close timestamp, **c > f** }        (first close strictly after the fill)
+  endpoint_price_ts(f,h) = entry_price_ts(f) + h
+  m(e,h) = d_e · ( P(endpoint_price_ts) / P(entry_price_ts) − 1 ) · 1e4   [bp]
+
+This is a fixed **0–5 minute** bar-resolution lag; it is never labelled or interpreted as execution/copy latency. **Boundary convention:** fill 1 ms **before** a close → use **that** close; fill **exactly at** a close → use the **next** close; fill 1 ms **after** a close → use the next close.
+
+**Purge time** for a training score = `endpoint_price_ts < C` (SPEC §1 / Leakage).
+
+**Frozen assertions:** (a) determine whether stored candle timestamps are bar-open or bar-close and **convert to this close-time convention before scoring**; (b) synthesized fills at exactly a close, at `−1 ms`, and at `+1 ms` must map to the entry closes above; (c) `entry_price_ts` never uses a close at or before `f`.
 
 ## Episode boundaries (frozen; gap = 30 min)
+An **episode** is a maximal run of position-*increasing* fills in one (wallet, coin, direction), consecutive increases ≤ 30 min apart. **`fill_ts` of the opening increase** is the episode's signal timestamp; its `entry_price_ts` is derived above. It **terminates** at the first of: (1) a same-direction increase >30 min after the previous increase (opens a new episode); (2) any **qualifying reduction** (§Dust); (3) a **flip** (§Flip). Markouts are measured over fixed horizons from `entry_price_ts` regardless of the wallet's own exit.
 
-An **episode** is a maximal run of position-*increasing* fills in one (wallet, coin, direction) such that consecutive increasing fills are ≤ 30 min apart. The episode **opens** at the first increasing fill from flat or in a new direction. It **terminates** at the first of:
+## Dust (item 5 — frozen)
+`$100` notional floor; frozen **reduction dust floor** = `max($100, 10% of episode peak notional)`.
+- **Increasing** fills `<$100`: do **not** open/extend an episode, but **do** update `q`.
+- If `q≠0` only from accumulated dust and no episode is open, the **next qualifying (≥$100) increase OPENS** an episode (direction = sign of that fill; **initial size = the qualifying fill only**; dust excluded from build price).
+- **Reductions** below the reduction dust floor do **not** terminate; at/above it, terminate per rule 2.
+- Repeated dust increases that cumulatively cross `$100`: **no** episode opens (only a single ≥$100 increase opens one); cumulative-dust-opens is a sensitivity.
+- **Frozen tests:** dust-open→qualifying add; qualifying-open→dust reduction; dust-open→qualifying flip; repeated dust crossing threshold.
 
-1. a same-direction increasing fill more than 30 min after the previous increasing fill (→ this fill *opens a new episode*, even if position is still open);
-2. any **reduction** fill (position decreases);
-3. a **flip** (→ close current episode, open a new one in the new direction at the flip fill).
+## Flip (item 6 — frozen)
+Closing leg terminates the old episode at the flip `fill_ts` (not itself an episode). Opening leg creates a new episode from the **residual quantity only** (`|s|−|q|`); its `entry_price_ts` derives from the flip `fill_ts`; build price accrues from the residual onward. Old and new share the flip timestamp; the old episode keeps its own earlier markouts; overlap resolved by §Deduplication.
 
-- **Signal time** `t0` = ts of the episode-opening fill (first observable increase).
-- **Average build price** = size-weighted avg price of all increasing fills in the episode; **build end** = ts of the last increasing fill in the episode.
-- Multiple episodes per (wallet, coin) per day are allowed and counted independently.
-- Simultaneous positions in different coins are independent episode streams.
+## Deduplication clock (item 13 — frozen)
+Interval `[ entry_price_ts(e), entry_price_ts(e) + 8h ]`. Per (wallet, coin) stream:
+1. sort episodes by `entry_price_ts` ascending;
+2. **retain the earliest**; **suppress** any later episode whose `entry_price_ts` is **strictly earlier than** the retained episode's 8 h endpoint;
+3. an episode **exactly at** the prior endpoint is **retained**; when the window closes, the next surviving episode becomes the anchor.
+Overlap is same wallet AND coin; opposite directions are suppressed within the window (direction-aware = sensitivity); earliest wins; suppressed episodes are never revived. The **same deduplicated set feeds eligibility counts, the training score, the evaluation outcome, and the positive controls.**
 
-## Edge cases (frozen decisions)
-
-- **Scaling after 30 min while still open:** starts a **new** episode (does not extend the old one). Rationale: a copier reacting to a fresh signal after a gap is a separate decision.
-- **Alternating add/reduce:** the first reduction terminates the current episode; a later increase opens a new one. (Sensitivity fork #8 relaxes "any reduction" to "reduction ≥ 50% of episode peak.")
-- **Flip:** two episodes — the old one terminates at the flip fill's timestamp; a new opposite-direction episode opens at the same fill.
-- **Maker vs taker fills:** episodes are built from position changes regardless of maker/taker (no taker-share filter). The `crossed` flag is retained per fill for a copyability sub-analysis (a purely-maker build may be harder to detect/copy) but does not gate episode construction.
-- **Sub-minimum notional dust:** increasing fills below the $100 notional floor are ignored for episode opening but still update `q`.
-
-## Exclusion flags (Stage-1 universe; computed as-of cutoff)
-
-A wallet-level flag is set from training-only fills:
-
-- **Liquidation-origin:** fraction of closes tagged liquidation above a frozen threshold **[PENDING AUDIT]**; or exchange liquidation flag present.
-- **TWAP/system flow:** near-uniform inter-fill spacing + near-constant clip size (coefficient of variation below a frozen threshold) across many fills — a mechanical scheduler signature.
-- **Wash:** offsetting same-wallet fills with no net exposure change beyond a tolerance, or self-cross patterns.
-- **Bot / mechanical slicer:** extreme fill frequency with sub-second regularity and uniform clip sizes; distinct from TWAP by cadence.
-- Thresholds for each flag are frozen from a training-window distribution audit and listed in the freeze addendum; they are not tuned on evaluation data.
+## Exclusion flags (as-of cutoff; validated by labelled flow only — change 7)
+**Do not exclude a wallet merely for being automated or a "bot" — automated trading may still contain information.** Primary exclusions target only: **liquidation / system flow**, **protocol TWAP / system execution**, **wash / self-crossing** (own net-exposure/self-cross detector), and **unreconciled ledger behaviour**. **Clearly mechanical slicing** (child fills that do not represent separate decisions) is handled by **aggregating the child fills into one episode** (via the 30-min/dedup construction), **not** by excluding the wallet; a wallet is excluded for slicing only when the slicing is unambiguous *and* leaves no discretionary decision. If slicer detection is uncertain, **aggregate, don't exclude.** Thresholds from a labelled set at **≥0.90 precision** (recall reported); if 0.90 is unreachable the flag family is disabled / sent to manual review, never run at lower precision. **No wallet-return relationship influences exclusion thresholds.**
 
 ## Markout definitions
+- **First-entry gross markout** — as in §Entry-price convention; the sole Gate-A input (`SCORE_AND_OUTCOME_SPEC.md`).
+- Copyability / average-build markouts are **Gate-B / descriptive only and sealed**; absent from Gate A.
 
-For horizon `h`, with `bar(t)` = close of the first 5-min bar with ts ≥ `t`:
-
-- **First-entry gross markout** (information score input): `dir × (bar(t0 + h) / bar(t0) − 1) × 1e4` bp. Entry pricepoint `bar(t0)` is post-signal, next-bar (no look-ahead into the signal bar).
-- **Copyability markout** (copyability score input): entry pricepoint `bar(t0 + latency)`; same forward endpoint; minus per-episode round-trip cost. Latency primary 60 s.
-- **Average-build descriptive markout:** `dir × (bar(build_end + h) / avg_build_price − 1) × 1e4` — reported for description only; not used for copy selection (a copier cannot obtain the average build price in real time).
-
-All markouts are forward-only from a post-signal pricepoint; no endpoint lies inside its own signal bar.
+All markouts are forward-only from a post-fill bar close; no endpoint lies inside its own signal bar.

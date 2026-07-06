@@ -1,39 +1,50 @@
-# GATE_A_FROZEN_CONFIG — one-page reproducible Gate-A spec (PENDING APPROVAL)
+# GATE_A_FROZEN_CONFIG — one-page locked-retrospective Gate-A spec — **VERSION 1.0 · FROZEN 2026-07-06**
 
-Everything needed to reproduce Gate A. Values marked **[AUDIT-ONLY]** are resolved by non-outcome coverage code (AUDIT_ONLY_PLAN.md) *before* freeze; none touches wallet returns. Latency/cost are absent here by design — Gate A needs neither.
+> **FROZEN v1.0.** No threshold, eligibility rule, estimator, selection rule, outcome definition, or verdict rule may be modified during the audit. The counts-only feasibility audit may only rule each frozen value *feasible-as-written* or *infeasible*. Any alteration requires a separately versioned Gate-A design and restarts the freeze.
+
+**Framing:** this 11-month tape has already been explored extensively, so a positive Gate-A result is a **locked retrospective validation / pilot**, **not** genuinely confirmatory. A confirmatory result would require untouched historical backfill or prospective future months. **All thresholds below are fixed before the locked retrospective run and cannot be changed after the Gate-A outputs are inspected** (not "a priori" — this tape and its specs have already been explored). The counts audit only *checks feasibility*. No latency or costs anywhere in Gate A.
 
 | Item | Frozen value |
 |---|---|
 | Universe | BTC, ETH, SOL, HYPE |
 | Band / horizons | mid {1, 2, 4, 8} h |
-| Walk-forward | monthly cutoffs C; evaluate month m = month after C; start month & fold count frozen mechanically before any return (C4) |
-| Purge | horizon-matched 8 h (episode enters a score only if `t0+h < C`); leakage assertions on forward-endpoint **bar** ts + temporal placebo |
-| Episode | 30-min gap; first-entry; startpos reconstructed + left-censored wallets quarantined; hold = flat→flat (not used in primary eligibility); fragments deduped to non-overlapping windows; min-reduction dust floor |
-| Wallet-day unit | mean of episode markouts per (wallet, day, horizon) — SPEC §2 |
-| Eligibility (return-independent only) | ≥50 independent episodes; ≥30 active days; ≥4 active months **[AUDIT-ONLY]**; scoreable = ≥J wallet-days at ≥3/4 horizons, J **[AUDIT-ONLY]**; episode-count concentration cap **[AUDIT-ONLY]**; liveness = active last 30 d; maker-heavy only if ledger-gate passes |
-| Median-hold filter | **removed from primary**; ≥1 h (completed-episodes-only) is a sensitivity |
-| Standardization | per horizon, across **wallets**, coin-pooled, winsorized 1/99, pre-C only; z = (Zbar−μ)/σ̂ — SPEC §4 |
-| Band score (pre-shrink) | equal-weight mean of present-horizon z; ≥3/4 horizons required — SPEC §5 |
-| Sampling variance | wallet-day block bootstrap, B=1000 — SPEC §6 |
-| Shrinkage | normal–normal MoM: τ̂²=Var_w[Zband]−mean_w V; λ=τ̂²/(τ̂²+V); θ̂=μ̂+λ(Zband−μ̂) — SPEC §7 |
-| Wallet score | θ̂(w,C) |
-| Tie-break | posterior P(θ_w > μ̂_C) — SPEC §7 |
-| Selection | top 10% of eligible by θ̂, min 20 / max 50; **no return-based concentration gate**; effective-N floor **[AUDIT-ONLY]** |
-| Realized outcome (single) | Yband(w,m) = ¼ Σ_h s(m−1,h)·Mbar(w,m,h) — SPEC §9; raw 1/2/4/8 h bp reported as decomposition, no best-horizon picking |
-| Non-selected field | equal-weight mean of per-wallet Yband over same-fold eligible non-selected wallets — SPEC §11 |
-| Gate-A statistics | (a) wallet rank IC Spearman(θ̂, Yband); (b) decile gradient; (c) equal-wallet selected−field Δ_m — SPEC §10 |
-| Inference unit | **calendar-month fold only**; coin×fold pooling prohibited |
-| Sign-test rule | Δ_m>0 in ≥k(F) folds, k(F)=smallest with one-sided binomial p≤0.05 {k5=5,k6=6,k7=7,k8=7,k9=8}; else **inconclusive** |
-| Report | every fold, F, #positive, exact p, mean, median, worst fold, LOFO, dispersion; LOO wallet/month/coin |
-| Positive controls | injection grid {0,3,5,10} bp cross-sectional spread + identity shuffle + timestamp/direction randomization; fixed, non-selecting — SPEC/A.13 |
+| Walk-forward | monthly cutoffs C; evaluate month m after C; **expanding** pre-cutoff training, no recency weighting; first fold + fold count from counts audit (mechanical) |
+| Entry price | `entry_price_ts(f)` = first 5-min **close strictly after** the fill (fill exactly on a close → next close); 0–5 min bar lag, **not** latency; `m(e,h)=d·(P(entry+h)/P(entry)−1)·1e4` |
+| Purge | `endpoint_price_ts < C` (8 h at the mid band); leakage tests = post-cutoff perturbation invariance + physical-access |
+| Episode | deterministic ledger; startpos reconstructed + left-censored quarantined; 30-min gap; flips (residual-only); dust rules + reduction floor `max($100,10% peak)`; 8 h same-wallet/coin dedup, earliest-wins, one set for all uses |
+| Wallet-day unit | mean of episode markouts per (wallet, day, horizon) |
+| Eligibility (return-independent, fixed) | ≥50 dedup episodes; ≥30 active wallet-days; ≥3 active calendar months; ≥J=20 wallet-days at ≥3/4 horizons; active in last 30 d; reconciled ledger; not clearly liquidation/system/wash/protocol-TWAP flow |
+| Median hold | **not an eligibility variable** — descriptive / sensitivity only |
+| Standardization | per horizon, across wallets, coin-pooled, winsorized 1/99 (wallet's own value clipped), pre-C; degenerate scale ⇒ fold unrankable |
+| Band score | equal-weight mean of present-horizon z (≥3/4 in training; 4/4 in evaluation) |
+| Reliability | **weekly cluster bootstrap** within wallet (one cluster = one active ISO week; all its days/coins/horizons move jointly), whole weeks resampled with replacement, B=1000, seed=sha256(GLOBAL∥w∥C), invalid-draw-not-redrawn; **<6 active weeks ⇒ unscoreable, cannot be selected** (no population-prior selection); reliability only, not time-series inference |
+| Shrinkage | one normal–normal EB: τ̂²=max(0,Var_w[Zband]−mean_w V); λ=τ̂²/(τ̂²+V); θ̂=μ̂+λ(Zband−μ̂); posterior var of latent effect = λV |
+| Selection | top 10% of eligible by θ̂, min 20 / max 50; return-independent; tie-break P(θ_w>μ̂), exact ties → ascending sha256(address) |
+| Realized outcome | Yband(w,m)=¼Σ_h s(m−1,h)·Mbar(w,m,h) (scaled, ranking); **Aband(w,m)=¼Σ_h Mbar(w,m,h)** (raw bp, absolute); **defined only with 4/4 horizons**, no zero-fill |
+| Field | wallets **eligible, scoreable, assigned a finite θ̂, in the same frozen ranking cross-section at C, but not selected** (SPEC §11). Unscoreable wallets (<6 weeks, invalid bootstrap, missing training horizons, …) enter **neither** selected nor field and are reported separately in attrition. Rank IC, deciles, and selected-minus-field all use this scored cross-section only |
+| Inference unit | **calendar month only**; no coin×fold pooling |
+| Rankable fold | N ≥ N_min=100 AND non-degenerate scale AND τ̂²>0; else `unrankable`, excluded from F |
+| Eval-sufficient fold | **≥10 complete-outcome selected wallets AND ≥50 complete-outcome field wallets**; else excluded from F. (Decile density and selected-completeness rate are **descriptive only**, never fold-validity gates.) |
 
-## Unresolved Gate-A placeholders (must be resolved by audit-only code before freeze — item 11)
-1. **Min active months** (currently 4) — from coverage/reliability.
-2. **J** = min eligible wallet-days per horizon for scoreable — from coverage.
-3. **Episode-count concentration cap** (days/months) — from activity-shape distribution.
-4. **Effective-N floor** for the reliability gate — pinned to positive-control MDE ≤ target (from the 0/3/5/10 grid on training folds), **not** from real rankings.
-5. **Liveness window** confirmation (30 d) — operational.
-6. **Exclusion-flag thresholds** (TWAP/wash/bot/liquidation) — from the labelled control set, precision/recall.
-7. **Start month & fold count** — mechanical from the eligibility counts once 1–5 resolve.
+## Pre-run gate — positive controls (must pass BEFORE any real-data run)
+Freeze all rules → run the nullized/injected controls (1000 frozen-seed sims) → the **point-estimate** decision: require **`FP_hat ≤ 0.05` at 0 bp** AND **`Recovery_hat ≥ 0.80` at the frozen 5 bp target** (also report 95% exact/Wilson CIs as MC-uncertainty diagnostics that do **not** change the decision; a near-boundary result is acknowledged MC-sensitive and is **not** rerun). If FP fails → pipeline **invalid**, do not unseal. If recovery fails → **underpowered**, do not unseal. **Only if both pass** is the locked real-data Gate-A result run. Controls validate the frozen pipeline; not a second test of the observed result, never modify thresholds (POSITIVE_CONTROL_SPEC).
 
-Latency and cost remain unresolved but are **Gate-B/C only** and do not affect Gate A. No placeholder above is set by inspecting wallet markout rankings or basket returns.
+## Gate-A verdict — the sole ranking test (real data, only after the pre-run gate passes)
+**Primary object `Δ_relative,m`** = selected-complete mean Yband − field-complete mean Yband. Verdict by the monthly sign test only:
+- valid-fold count F = rankable (§7b) **and** evaluation-sufficient (≥10 selected & ≥50 field complete) folds;
+- **k(F) = min{ k∈{0,…,F} : P[Binomial(F,0.5) ≥ k] ≤ 0.05 }**, computed & verified **mechanically** (not a hard-coded table). **F<5 ⇒ automatically INCONCLUSIVE** (no rejection is possible at α=0.05 below 5 folds).
+
+| Condition | Verdict |
+|---|---|
+| Δ_relative,m > 0 in ≥ k(F) folds | **PASS** (locked-retrospective positive — not confirmatory) |
+| Enough valid folds, threshold not met | **FAIL** |
+| Too few valid real-data folds, or >50% unrankable/eval-insufficient | **INCONCLUSIVE** (never "no effect") |
+
+**Absolute positivity `A_selected,m` = mean over complete-outcome selected wallets of Aband(w,m)**, `Aband(w,m)=¼Σ_h Mbar(w,m,h)` raw bp. Reported separately (positive or negative), **plus the selected-wallet raw mean at each of 1/2/4/8 h** so a one-horizon effect cannot hide inside the band average. It **never merges into the verdict**. A PASS with negative A_selected = "ranking separates better-from-worse, but selected wallets' gross markout is still negative" — not "found positive-markout wallets."
+
+**Sign-test independence (mandatory limitation):** the one-sided binomial p is **exact only conditional on independent monthly fold signs**; because wallets recur and the training window expands, serial dependence may reduce the effective evidence. Report lag-one autocorrelation of `Δ_relative,m` and of the sign sequence as limitation diagnostics — they **do not alter** the frozen verdict.
+
+**Mandatory descriptive corroboration** (rank IC, all-ten-deciles, pooled month-equal decile Spearman, leave-one-wallet/-coin/-month): reported every fold, but they are **related summaries of the same ranking — not independent confirmations — and cannot veto or rescue the sign-test verdict.**
+
+## Fixed values CHECKED by the counts audit (feasibility only — not resolved/tuned)
+J=20 and N_min=100 are already **frozen**; the audit may only rule each **feasible-as-written** or **infeasible on this dataset** — it may **not** replace a threshold with a different value after seeing counts. Any threshold change requires a **newly versioned design and restarts the freeze**. The audit reports (data-availability only): first feasible fold; candidate-fold count; eligible-wallet counts; J=20 feasibility; N_min=100 clearance; 4/4 completeness; ledger quarantine; exclusion-label precision (≥0.90 else disable/manual); ≥6-week bootstrap feasibility. **None set from wallet rankings or returns.** Latency/cost are Gate-B/C only.

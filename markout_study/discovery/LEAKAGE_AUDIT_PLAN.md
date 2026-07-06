@@ -1,30 +1,30 @@
-# LEAKAGE_AUDIT_PLAN
+# LEAKAGE_AUDIT_PLAN (revised to match PREREGISTRATION_v2 / SPEC)
 
-The prior study's headline leak was whole-window eligibility (taker share, hold, fill count computed over train+test). This experiment fixes it structurally; this plan is the checklist that must pass before any result is reported.
+The prior study's headline leak was whole-window eligibility. This experiment fixes it structurally; this checklist must pass before any result is reported. The invariant list below matches the primary specification exactly (item 12).
 
 ## Invariant: everything used at cutoff C uses only `ts < C`
+1. **Eligibility** — episode count, active days, active months, per-horizon wallet-day coverage (J), episode-count concentration, exclusion flags, liveness. **Median hold is NOT an eligibility variable** (removed from primary; a completed-episodes-only sensitivity per PREREG A.1). A wallet's eligibility at C must not depend on any future activity, future holding behavior, or any next-month return.
+2. **Shrinkage fit** — universe mean μ̂_C, τ̂²_C, per-wallet V(w,C), posterior θ̂ — all on `ts < C`.
+3. **Horizon standardization** — μ(C,h), σ̂(C,h), winsor quantiles — training-only, frozen per fold.
+4. **Selection** — ranking and gates use only as-of-C θ̂. No return-based gate exists.
+5. **Public benchmark** — Gate-C standalone strategy's rules fit on prior data inside each fold, wallet-independent (SPEC §12-ii); never on evaluation data.
+6. **Cost/latency** — Gate-B/C only; fixed once `DEPLOYMENT_INPUT_FREEZE.md` is signed; never consulted during Gate A.
 
-For every monthly cutoff C, the following are recomputed from training-only fills and must contain **no** information dated ≥ C:
+## Two boundary rules (frozen)
+- **Training score:** every outcome **endpoint** feeding a score must lie **strictly before C** — the endpoint close timestamp `o0+h+5min < C` (SPEC/EPISODE §Bar semantics), i.e. an 8 h purge at the mid band.
+- **Evaluation month:** an episode is assigned to month `m` by its **signal timestamp**; its 1–8 h endpoint **may extend past month-end** provided the endpoint exists on the tape and is **never used for any as-of-C selection**. This is the return being measured, not a leak.
+- **Final-month right-censoring:** episodes whose endpoint bar does not exist on the tape (last ~8 h) are **omitted** from the outcome — **never zero-filled** and never assigned an artificial value.
 
-1. **Eligibility** — episode count, active days, active months, median hold, all exclusion flags (liquidation/TWAP/wash/bot). Explicit check: a wallet's eligibility at C must not depend on its future activity or future holding behavior.
-2. **Shrinkage fit** — the universe mean, per-band SD used for standardization, prior variance, and each wallet's posterior are estimated on `ts < C` only.
-3. **Horizon standardization** — the cross-sectional SD used to standardize each horizon's markout is a training-only statistic, frozen per fold.
-4. **Selection** — ranking and gates use only as-of-C scores.
-5. **Public benchmark parameters** — any threshold/coefficients in the Gate-C strategy are fit on the first training window and frozen, or refit as-of C from training-only data; never fit on evaluation data.
-6. **Cost/latency** — fixed constants, no data dependence.
+## Automated checks (coded into the pipeline) — item 6
+Two **hard leakage tests** (a difference is a hard failure), replacing the old "move-the-cutoff-and-see-the-score-change" placebo (which does not diagnose leakage):
 
-## Forward-window hygiene
+1. **Post-cutoff perturbation invariance.** Build eligibility, scores, and selection at C. Then **arbitrarily corrupt / shuffle / replace every fill and price observation strictly after C** and rebuild all as-of-C outputs. Require **exact equality** of: eligible wallets, training episode records, standardization parameters, shrinkage parameters, wallet scores, and selected identities. Any difference = hard leakage failure.
+2. **Physical-access test.** Run the as-of-C pipeline against a data view in which **every row at or after C is physically unavailable**. It must produce **the same result** as the full-data run.
 
-- Entry pricepoints are the first bar strictly after signal (and after signal+latency for copy); no endpoint lies in its own signal bar.
-- Markout forward windows may extend past C for episodes near the boundary; those episodes' *outcomes* are evaluation data and must not feed back into selection at C. An episode is assigned to the evaluation month of its signal time, and its forward window is allowed to run into the next month (that is the return being measured), but its outcome never informs any as-of-C eligibility or score.
-- Embargo: primary 0 (episodes are short and the entry decision uses no future data); a 1-month embargo is a pre-registered sensitivity to confirm boundary episodes do not drive results.
-
-## Automated checks (must be coded into the pipeline, not just asserted)
-
-- A per-fold assertion that every field feeding selection has max source-ts < C.
-- A recomputation test: rebuild eligibility with a deliberately shifted cutoff and confirm membership changes only through genuinely prior information.
-- A shuffle control: randomly permute wallet identities within each cutoff and confirm the ranking signal collapses (guards against an accidental identity leak).
+Supporting (diagnostic, not proof):
+- Per-fold assertion: every field feeding selection has max source **fill-ts < C** AND every scoring episode's **endpoint_price_ts < C**.
+- **Cutoff-shift recomputation** — general diagnostic only; not evidence of leakage absence.
+- **Identity shuffle** — permute wallet identities within a cutoff; ranking signal must collapse (guards identity leak; blind to temporal leaks, which tests 1–2 cover).
 
 ## Reporting
-
-The leakage audit result (pass/fail per check, per fold) is a required table in the output. No headline number is reported until all checks pass on all folds. This plan is itself audited by the design swarm.
+Pass/fail per check per fold is a required output table (T3). No headline number is reported until all checks pass on all folds. Audited by the design swarm.

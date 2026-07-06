@@ -44,7 +44,7 @@ Gate B and Gate C are distinct and both pre-registered. See `PUBLIC_BENCHMARK_SP
 
 ## Inference stance
 
-Calendar time (month) is the independent dimension. Primary inference is fold-level: per-month statistics, month-block bootstrap and sign tests, never entry-level pooled CIs as the headline. Latency and copyability are ignored *for discovery/ranking only*; any profitability claim uses the copyability score under the frozen portfolio and cost rule.
+Calendar time (month) is the independent dimension and the **only** headline inference unit (no coin×fold pooling). The Gate-A **verdict is the monthly selected-minus-field (`Δ_relative`) sign test only**; rank IC, deciles, month-block bootstrap and leave-one-out are **descriptive corroboration that cannot change the verdict**. Absolute selected markout (`A_selected`, raw bp) is reported separately and never merges into the verdict. This tape is **locked retrospective evidence, not confirmatory** (extensively explored; confirmation needs backfill or prospective months). Latency/copyability belong only to Gate B; Gate A is pure gross markout. (This overview predates the detailed specs; `GATE_A_FROZEN_CONFIG.md` + `SCORE_AND_OUTCOME_SPEC.md` are authoritative where they differ.)
 
 ## Process gates around this experiment
 

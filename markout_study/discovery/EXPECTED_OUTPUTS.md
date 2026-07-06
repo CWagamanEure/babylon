@@ -8,7 +8,9 @@ All headline outputs are fold-level (per evaluation month) with month-block infe
 - **T2 Power/MDE** — per band × sizing MDE vs cost vs plausible edge; positive-control recovery.
 - **T3 Leakage audit** — pass/fail per check per fold.
 - **T4 Selection summary** — per cutoff: basket size, turnover, attrition, coin/month concentration.
-- **T5 Gate A** — per-fold rank IC, mean/median/sd, sign test, decile-gradient table (both bands).
+- **T5 Gate A (verdict)** — per-fold `Δ_relative` (selected−field Yband) + the sign test (F, #positive, k(F), exact p) = the sole ranking verdict. Mid band only.
+- **T5b Gate A (absolute, reported separately)** — per-fold `A_selected` = mean over complete selected wallets of `Aband=¼Σ_h Mbar` in raw bp (positive/negative), **plus the selected raw mean at each of 1/2/4/8 h** (so a one-horizon effect can't hide in the band average). Never merged into the verdict.
+- **T5c Gate A corroboration (descriptive)** — rank IC by fold; all-ten-decile table + pooled month-equal decile Spearman (sparse months marked "sparse/unavailable"); leave-one-wallet/-coin/-month; **lag-one autocorrelation of `Δ_relative,m` and of the sign sequence** (independence limitation). All descriptive — cannot veto/rescue the verdict. Selected/field activity + 4-of-4 completeness rates reported in the attrition table.
 - **T6 Gate B** — basket absolute gross / delayed / cost-adjusted return, per month and pooled month-block CI, both sizings, leave-one-out (wallet/coin/month).
 - **T7 Gate C** — basket vs frozen public benchmark per month, difference CI, orthogonal-component decomposition.
 - **T8 Robustness grid** — primary vs the ≤2 sensitivities per fork (`CONFIG_FORKS.md`), showing verdict stability.
@@ -16,7 +18,7 @@ All headline outputs are fold-level (per evaluation month) with month-block infe
 
 ## Figures
 
-- **F1** Decile gradient: next-month band return by prior-month copyability decile, both bands, fold-level CIs.
+- **F1** Decile gradient: next-month Yband by prior-month gross-score (θ̂) decile, mid band; per-month + pooled month-equal decile curve.
 - **F2** Rank-IC by fold (bar per month + mean line + sign test).
 - **F3** Basket cumulative return, wallet-day sizing, with the frozen public benchmark overlaid (Gate B and C on one axis).
 - **F4** Per-coin and per-month decomposition of the basket return (concentration check).
@@ -26,6 +28,6 @@ All headline outputs are fold-level (per evaluation month) with month-block infe
 
 ## Headline statement template (filled after run, not before)
 
-> Under the primary specification, the walk-forward [mid/low]-band basket had a cost-adjusted, post-latency return of **X bp/month [CI]** (Gate B: pass/fail), a rank IC of **Y [CI]** across **n** folds (Gate A: pass/fail), and **beat / did not beat** the frozen public reversal strategy by **Z bp [CI]** (Gate C). Verdict: [positive / negative for profitability / negative for the wallet layer / inconclusive-underpowered], stable across [k] pre-registered sensitivities.
+> **Locked retrospective (not confirmatory).** Under the frozen Gate-A specification on the mid {1,2,4,8} h band, the selected-minus-field markout (`Δ_relative`) was positive in **[#]/[F]** calendar-month folds (sign-test p = **[p]**, threshold k(F)=**[k]**): **[PASS / FAIL / INCONCLUSIVE]**. Selected wallets' absolute gross markout (`A_selected`) was **[+/− X bp]** (reported separately; does not affect the ranking verdict). Corroboration: rank IC **[Y]**, pooled decile Spearman **[·]** (descriptive only). Because this tape was extensively explored, a PASS is suggestive locked-retrospective evidence, not confirmation; deployment (Gate B) remains sealed.
 
 No headline is written until leakage (T3) and power (T2) audits pass and both post-run audit swarms have reported.
