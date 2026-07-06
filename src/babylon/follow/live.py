@@ -119,7 +119,7 @@ class LiveFollowSystem:
                                  impact_bps=config.impact_bps, max_depth_frac=config.max_depth_frac)
         runner: FollowRunner | HarvestRunner
         realized_journal: RealizedJournal | None = None
-        if config.selection_signal == "markout":
+        if config.selection_signal in ("markout", "fixed"):
             # the VALIDATED strategy: event-driven 6h-drift harvest (docs/HARVEST_EXECUTOR.md),
             # NOT position-mirror. Tranche caps from the book budget; per-wallet tail-aware sizing.
             # entry_lag_ms is the EXECUTOR delay (default 0 = enter on detection; real ~30-60s from
@@ -137,7 +137,12 @@ class LiveFollowSystem:
                 max_gross_notional=config.gross_target * budget_usd * cap_mult,
                 min_tranche_notional=max(1.0, 0.1 * harvest_base),
                 max_entry_lag_ms=config.harvest_max_entry_lag_ms)
-            notionals = _harvest_notionals(returns_fn, roster, config, budget_usd, t0_ms)
+            if config.selection_signal == "fixed":
+                # badge mode: flat per-event base (no tail-aware Kelly — sizing needs train
+                # fills the badge roster deliberately doesn't ship with)
+                notionals = {w: harvest_base for w in roster}
+            else:
+                notionals = _harvest_notionals(returns_fn, roster, config, budget_usd, t0_ms)
             runner = HarvestRunner(ledger, notionals, executor, universe=set(universe),
                                    watcher=watcher, roster=roster, budget_usd=budget_usd)
             watcher.set_opens_sink(runner.ingest_opens)
@@ -166,8 +171,13 @@ class LiveFollowSystem:
             await self.prepare(t0_ms)
         roster, weights, run_id = self.scheduler.roll(t0_ms)
         if isinstance(self.runner, HarvestRunner):
-            notionals = _harvest_notionals(
-                self.returns_fn, roster, self.config, self.budget_usd, t0_ms)  # type: ignore[arg-type]
+            if self.config.selection_signal == "fixed":
+                # badge mode: reroll re-commits the same fixed roster; sizing stays flat —
+                # NEVER fall through to tail-aware Kelly (it ranks on the falsified signal)
+                notionals = {w: self.budget_usd * self.config.harvest_base_frac for w in roster}
+            else:
+                notionals = _harvest_notionals(
+                    self.returns_fn, roster, self.config, self.budget_usd, t0_ms)  # type: ignore[arg-type]
             self.runner.adopt_roster(notionals, roster, since_ms=t0_ms)
         else:
             self.runner.adopt_roster(weights, since_ms=t0_ms)

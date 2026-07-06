@@ -172,6 +172,21 @@ class RollScheduler:
         immutable manifest, and return (roster, weights, run_id) for the runner to adopt.
         Idempotent for an identical re-selection; a different selection at the same T0 is
         refused by the registry (immutable pre-registration)."""
+        if self._config.selection_signal == "fixed":
+            # BADGE mode: the candidates file IS the roster (computed off-box by the audited
+            # badge pipeline; audit/edge3 signal H). No re-ranking, equal weights, no train
+            # cutoffs — the immutable manifest still freezes exactly what runs.
+            roster = self._candidates[: self._max_roster or None]
+            if not roster:
+                raise ValueError("fixed selection: empty candidates roster")
+            weights = {w: 1.0 / len(roster) for w in roster}
+            manifest = RunManifest.build(
+                t0_ms=t0_ms, edge_weights=weights,
+                train_cutoff_tids={w: 0 for w in roster},   # sentinel: no train data to freeze
+                config=self._config, analysis_script_hash=self._analysis_hash)
+            run_id = self._registry.register(manifest)
+            log.info("roll.committed_fixed", t0_ms=t0_ms, run_id=run_id, n_roster=len(roster))
+            return roster, weights, run_id
         # The raw-activity gate is the round-trip disposition-bias fix. The markout signal scores
         # OPENS (disposition-free), so it gates purely on the OPEN count (len(returns) ≥
         # min_positions = the validated min_train) via select_roster's no-activity branch — no raw

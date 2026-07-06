@@ -30,3 +30,6 @@ logs/
 # Local research scratch + cross-repo data dumps (multi-GB: jsonl extracts, monthly parquets)
 scratch_conv/
 other_repo_notes/
+
+# Regenerable data artifacts (too large for GitHub 100MB limit)
+markout_study/out/*.npz

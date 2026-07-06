@@ -118,10 +118,10 @@ class ExperimentConfig:
         assert math.isfinite(self.beta)
         # economic floor: a GO must clear realistic cost by a real margin
         assert self.cost_floor_bps >= 0 and self.mar_bps >= 1.0, "MAR must be a real ≥1bp margin"
-        assert self.selection_signal in ("roundtrip", "markout")
+        assert self.selection_signal in ("roundtrip", "markout", "fixed")
         assert self.selection_rank in ("sortino", "trimmed_mean")
-        if self.selection_signal == "markout":
-            assert self.markout_horizon_ms > 0, "markout signal needs a positive horizon_ms"
+        if self.selection_signal in ("markout", "fixed"):
+            assert self.markout_horizon_ms > 0, "markout/fixed signal needs a positive horizon_ms"
         assert 0 < self.harvest_kelly_frac <= 1, "fractional-Kelly scalar must be in (0, 1]"
         assert 0 < self.harvest_base_frac <= 1, "harvest base fraction must be in (0, 1]"
         assert self.harvest_cap_mult >= 1.0, "cap multiplier only loosens (>=1); never tightens"

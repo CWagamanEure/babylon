@@ -62,9 +62,12 @@ def locked_config(
     (audit/EDGE_INVESTIGATION.md): per-entry 6 h markout, 15 min follower lag, neutralized,
     ranked by trimmed-mean. `selection="roundtrip"` (default) keeps the original directional
     round-trip Sortino rule. Both are pre-registered configs — pick one at deploy, not mid-run."""
-    if selection not in ("roundtrip", "markout"):
-        raise ValueError(f"selection must be 'roundtrip' or 'markout', got {selection!r}")
-    markout = selection == "markout"
+    if selection not in ("roundtrip", "markout", "fixed"):
+        raise ValueError(f"selection must be 'roundtrip', 'markout' or 'fixed', got {selection!r}")
+    # "fixed" = the BADGE paper run (audit/edge3 signal H): externally-computed roster taken
+    # as-is (no re-ranking), event-driven harvest at the badge's 24h horizon, flat per-event
+    # sizing. Measurement-mode caps like markout.
+    markout = selection in ("markout", "fixed")
     return ExperimentConfig(
         execution=execution, universe_hash=universe_hash(universe),  # type: ignore[arg-type]
         eligible_pool="broad_study_pool", train_days=30, follow_days=14, roll_cadence_days=14,
@@ -76,8 +79,8 @@ def locked_config(
         max_coin_frac=0.08, max_wallet_frac=0.05, also_run_uncapped=True,
         # markout: 15 min follower lag (vs 60 s); round-trip: 60 s
         lag_bucket_ms=900_000 if markout else 60_000,
-        selection_signal="markout" if markout else "roundtrip",
-        markout_horizon_ms=21_600_000 if markout else 0,           # 6 h fixed horizon
+        selection_signal=selection,
+        markout_horizon_ms=(86_400_000 if selection == "fixed" else 21_600_000) if markout else 0,  # badge: 24h; markout: 6h
         selection_rank="trimmed_mean" if markout else "sortino",
         # markout is a paper MEASUREMENT run: loosen the ledger caps 20× so a busy period doesn't
         # saturate the $1000 gross and cancel later opens by arrival (biasing WHICH opens harvest).
@@ -248,7 +251,7 @@ def main() -> None:
     ap.add_argument("--testnet", action="store_true")
     ap.add_argument("--dry-run", action="store_true",
                     help="prepare + initial roll only (pre-arm smoke), do not trade")
-    ap.add_argument("--selection", choices=("roundtrip", "markout"), default="roundtrip",
+    ap.add_argument("--selection", choices=("roundtrip", "markout", "fixed"), default="roundtrip",
                     help="roundtrip = original directional Sortino rule; markout = the validated "
                          "fixed-horizon operating point (6h markout, 15min lag, neutralized, "
                          "trimmed-mean). See audit/EDGE_INVESTIGATION.md.")
@@ -271,6 +274,8 @@ def main() -> None:
     # selection-aware default pool. markout's validated pool is the BROAD 2431-wallet study
     # universe (fills_his) — NOT the long-hold survivor list (Audit 01): pre-selecting on past
     # long-hold skill is survivorship-tainted and isn't what the +24-31bp edge was measured on.
+    if a.selection == "fixed" and a.candidates is None:
+        raise SystemExit("--selection fixed requires an explicit --candidates roster CSV")
     cand_path = a.candidates or (Path("data/follow/markout_candidates.csv")
                                  if a.selection == "markout" else
                                  Path("data/follow/long_hold_wallets.csv"))

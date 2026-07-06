@@ -1,0 +1,200 @@
+{
+"cost_table": {
+"BTC": 8.0,
+"ETH": 8.0,
+"SOL": 10.0,
+"HYPE": 14.0
+},
+"fixed121": {
+"schemes": {
+"wd": {
+"scheme": "wallet-day (primary)",
+"selected": 121,
+"active": 97,
+"wallet_days": 4286,
+"wallet_coin_days": 5811,
+"calendar_days": 122,
+"A_gross": 11.45,
+"A_costadj": 1.27,
+"B_minus_field": [
+9.75,
+3.4,
+15.9,
+0.001
+],
+"C_minus_fade": [
+4.49,
+-7.4,
+16.6,
+0.227
+]
+},
+"ew": {
+"scheme": "equal-wallet",
+"selected": 121,
+"active": 97,
+"wallet_days": 4286,
+"wallet_coin_days": 5811,
+"calendar_days": 122,
+"A_gross": 4.38,
+"A_costadj": -5.73,
+"B_minus_field": [
+4.62,
+-4.3,
+14.6,
+0.169
+],
+"C_minus_fade": [
+-3.93,
+-11.9,
+3.3,
+0.165
+]
+},
+"wcd": {
+"scheme": "wallet-coin-day (sensitivity)",
+"selected": 121,
+"active": 97,
+"wallet_days": 4286,
+"wallet_coin_days": 5811,
+"calendar_days": 122,
+"A_gross": 12.01,
+"A_costadj": 1.97,
+"B_minus_field": [
+10.51,
+4.6,
+16.5,
+0.001
+],
+"C_minus_fade": [
+3.79,
+-8.6,
+16.5,
+0.276
+]
+}
+},
+"conc_by_coin": {
+"BTC": 2.2,
+"ETH": 6.0,
+"SOL": 12.5,
+"HYPE": -2.4
+},
+"conc_drop_top_wallet_B": 9.68,
+"top_wallet_mean": 332.7,
+"by_month": {
+"2026-03": 11.0,
+"2026-04": 4.1,
+"2026-05": -8.6,
+"2026-06": 4.6
+}
+},
+"recurrence": {
+"train_only": {
+"n_months": 6,
+"ge2": {
+"obs": 121,
+"null": 88.7,
+"p": 0.0
+},
+"ge3": {
+"obs": 27,
+"null": 8.3,
+"p": 0.0
+},
+"ge4": {
+"obs": 5,
+"null": 0.5,
+"p": 0.0
+}
+},
+"full_exploratory": {
+"n_months": 11,
+"ge2": {
+"obs": 213,
+"null": 185.4,
+"p": 0.0005
+},
+"ge3": {
+"obs": 72,
+"null": 34.9,
+"p": 0.0
+},
+"ge4": {
+"obs": 25,
+"null": 5.0,
+"p": 0.0
+}
+}
+},
+"pooled_slope": {
+"slope_per_bp": -0.0577,
+"ci95_2sided": [
+-0.1076,
+-0.018
+],
+"p_1sided_ge0": 0.0,
+"n": 590910,
+"controls": "coin FE + month FE + vol2h; day-cluster bootstrap"
+},
+"h24_blocks": {
+"BTC": {
+"pt": -6.37,
+"daycluster": [
+-13.5,
+0.0
+],
+"block5d": [
+-13.0,
+0.1
+]
+},
+"ALL": {
+"pt": -6.27,
+"daycluster": [
+-16.5,
+3.4
+],
+"block5d": [
+-16.7,
+3.6
+]
+}
+},
+"static_rho": {
+"pearson": 0.004,
+"spearman": 0.022,
+"n": 936,
+"def": ">=30 train & >=20 test entries; raw_8h wallet means"
+},
+"behavioral": {
+"recurring121": {
+"n": 61954,
+"signed_pre8h": -73.2,
+"abs_pre8h": 168.4,
+"stretch": 308.5,
+"vol2h": 23.1
+},
+"rest_cohort": {
+"n": 750662,
+"signed_pre8h": -11.4,
+"abs_pre8h": 131.4,
+"stretch": 199.4,
+"vol2h": 18.8
+},
+"recurring_long": {
+"n": 39106,
+"signed_pre8h": -91.9,
+"abs_pre8h": 182.4,
+"stretch": 338.2,
+"vol2h": 24.5
+},
+"recurring_short": {
+"n": 22848,
+"signed_pre8h": -46.3,
+"abs_pre8h": 147.3,
+"stretch": 258.7,
+"vol2h": 20.7
+}
+}
+}

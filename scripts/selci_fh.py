@@ -33,6 +33,38 @@ from babylon.follow.skill import _basket_ret_bps, build_basket, open_events as _
 _HOUR_MS = 3_600_000
 
 
+def _close_post(lookup, t, iv=_HOUR_MS):
+    """Close of the candle (interval ``iv`` ms) CONTAINING ``t`` — strictly POST-fill pricing.
+    The price timestamp (candle close) lies in (t, t+iv], so it can never read a price from
+    before the leader's fill. Contrast `_close_at` (last candle fully closed by t), whose price
+    timestamp lies in (t-iv, t] — on average iv/2 BEFORE t, i.e. before the fill for lags < iv/2
+    (audit/edge3 F2: that stale pricing credits pre-fill run-up + leader impact to the follower).
+    Returns (price, close_time_ms) so the basket leg can be aligned to the same instants, or
+    None if ``t`` falls in a candle gap (delisting/halt) — bounded staleness in both directions."""
+    times, closes = lookup
+    i = int(np.searchsorted(times, t, side="right")) - 1
+    if i < 0 or i >= closes.size:
+        return None
+    ct = int(times[i]) + iv
+    if ct <= t:  # candle i closed before t: t is inside a gap, no containing candle
+        return None
+    px = float(closes[i])
+    return (px, ct) if px > 0 else None
+
+
+def _basket_at(basket, t0, t1, iv=_HOUR_MS):
+    """Interval-aware clone of skill._basket_ret_bps (which hardcodes hourly): basket index at
+    the last grid point fully closed by each t. When t is an exact candle-close instant (what
+    `_close_post` returns), this picks exactly that candle's index point, keeping the beta leg
+    aligned with the coin leg."""
+    times, index = basket
+    i0 = int(np.searchsorted(times, t0 - iv, side="right")) - 1
+    i1 = int(np.searchsorted(times, t1 - iv, side="right")) - 1
+    if i0 < 0 or i1 < 0 or i0 >= index.size or i1 >= index.size or index[i0] <= 0:
+        return 0.0
+    return float(index[i1] / index[i0] - 1.0) * 1e4
+
+
 def _jobs(univ, n_k):
     return [(k, w) for k in range(n_k) for w in univ[k]]
 
@@ -98,12 +130,21 @@ def cmd_extract(args):
                     tr_n, tr_t, te_n, te_lead, te_sz, te_t, te_coin = [], [], [], [], [], [], []
                     for c, et, d, lead, notl in events:
                         lk = lookups[c]
-                        ein = _close_at(lk, et + lag)
-                        eout = _close_at(lk, et + lag + H)
-                        if ein is None or eout is None:
-                            continue
-                        neut = d * (eout / ein - 1.0) * 1e4 \
-                            - d * args.beta * _basket_ret_bps(basket, et + lag, et + lag + H)
+                        if args.pricing == "post":
+                            pin = _close_post(lk, et + lag, args.candle_ms)
+                            pout = _close_post(lk, et + lag + H, args.candle_ms)
+                            if pin is None or pout is None:
+                                continue
+                            (ein, tin), (eout, tout) = pin, pout
+                            neut = d * (eout / ein - 1.0) * 1e4 \
+                                - d * args.beta * _basket_at(basket, tin, tout, args.candle_ms)
+                        else:
+                            ein = _close_at(lk, et + lag)
+                            eout = _close_at(lk, et + lag + H)
+                            if ein is None or eout is None:
+                                continue
+                            neut = d * (eout / ein - 1.0) * 1e4 \
+                                - d * args.beta * _basket_ret_bps(basket, et + lag, et + lag + H)
                         end = et + lag + H
                         if end < t0:
                             tr_n.append(neut); tr_t.append(et)
@@ -581,6 +622,12 @@ def main():
     ap.add_argument("--cost", type=float, default=8.0)
     ap.add_argument("--drop-leading", action="store_true",
                     help="ci: exclude leading-open markouts (Audit 11 seeding sensitivity)")
+    ap.add_argument("--candle-ms", type=int, default=_HOUR_MS,
+                    help="extract: candle interval of --candles-dir/--cache in ms (post pricing)")
+    ap.add_argument("--pricing", choices=["pre", "post"], default="pre",
+                    help="extract: 'pre' = last fully-closed candle (legacy; price stamp in "
+                         "(t-1h,t], on avg pre-fill for lag<30m); 'post' = containing-candle "
+                         "close (strictly post-fill, stamp in (t,t+1h]; audit/edge3 F2)")
     args = ap.parse_args()
     {"cache": cmd_cache, "njobs": cmd_njobs, "extract": cmd_extract, "ci": cmd_ci,
      "panel": cmd_panel, "sizeedge": cmd_sizeedge, "persist": cmd_persist, "coincost": cmd_coincost}[args.mode](args)
