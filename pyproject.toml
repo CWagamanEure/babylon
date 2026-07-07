@@ -52,6 +52,8 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# repo root on sys.path so research/ and markout_study/ (not installed packages) import in tests
+pythonpath = ["."]
 
 [tool.mypy]
 python_version = "3.12"
