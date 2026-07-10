@@ -49,6 +49,8 @@ class Tranche:
     exit_fill_px: float | None = None
     exit_fill_ms: int | None = None
     raw_bps: float | None = None      # directional, pre-neutralization (basket subtracted later)
+    horizon_ms: int | None = None     # per-tranche override (basket mode: each wallet-coin carries
+                                      # its own frozen horizon); None = the ledger's global horizon
 
     @property
     def signed_notional(self) -> float:
@@ -96,21 +98,24 @@ class HarvestLedger:
         self._n_registered = 0                       # opens registered as tranches
         self._n_capped = 0                           # dropped: cap left < min_tranche room
         self._n_entry_expired = 0                    # dropped: never entered before the deadline
+        self._n_entry_nofill = 0                     # dropped: entry order got no fill (audit F5 —
+                                                     # thin-book drops are the selection-bias class)
 
     # ── ingest ────────────────────────────────────────────────────────────────────────────
     def on_open_event(
         self, *, event_id: str, wallet: str, coin: str, direction: int, notional: float,
-        open_event_ms: int,
+        open_event_ms: int, horizon_ms: int | None = None,
     ) -> bool:
         """Register a tranche for a detected conviction open. Idempotent: a duplicate event_id
-        (the same open re-seen across polls) is ignored. Returns True if newly registered."""
+        (the same open re-seen across polls) is ignored. `horizon_ms` overrides the ledger's
+        global horizon for this tranche (basket mode). Returns True if newly registered."""
         if event_id in self._tranches:
             return False
         if direction not in (1, -1) or notional <= 0:
             return False
         self._tranches[event_id] = Tranche(
             id=event_id, wallet=wallet, coin=coin, direction=direction, notional=float(notional),
-            entry_target_ms=open_event_ms + self._entry_lag_ms)
+            entry_target_ms=open_event_ms + self._entry_lag_ms, horizon_ms=horizon_ms)
         self._open_event_ms[event_id] = open_event_ms
         self._n_registered += 1
         return True
@@ -163,7 +168,7 @@ class HarvestLedger:
             return
         t.entry_fill_px = float(fill_px)
         t.entry_fill_ms = int(fill_ms)
-        t.expiry_ms = int(fill_ms) + self._horizon_ms
+        t.expiry_ms = int(fill_ms) + (t.horizon_ms or self._horizon_ms)
         t.state = TrancheState.OPEN
 
     def on_entry_failed(self, event_id: str) -> None:
@@ -171,6 +176,7 @@ class HarvestLedger:
         t = self._tranches.get(event_id)
         if t is not None and t.state is TrancheState.PENDING_ENTRY:
             t.state = TrancheState.CANCELLED
+            self._n_entry_nofill += 1
 
     # ── exit side ─────────────────────────────────────────────────────────────────────────
     def due_exits(self, now_ms: int) -> list[Tranche]:
@@ -225,8 +231,8 @@ class HarvestLedger:
         opens — surfaced so silent coverage collapse can't read as 'measured everything'."""
         pending = sum(1 for t in self._tranches.values() if t.state is TrancheState.PENDING_ENTRY)
         return {"registered": self._n_registered, "capped": self._n_capped,
-                "entry_expired": self._n_entry_expired, "pending": pending,
-                "open": len(self.open_tranches())}
+                "entry_expired": self._n_entry_expired, "entry_nofill": self._n_entry_nofill,
+                "pending": pending, "open": len(self.open_tranches())}
 
     @property
     def realized(self) -> list[RealizedRoundTrip]:
@@ -251,7 +257,8 @@ class HarvestLedger:
                               for t in live if t.id in self._open_event_ms},
             "realized": [asdict(r) for r in self._realized],
             "coverage": {"registered": self._n_registered, "capped": self._n_capped,
-                         "entry_expired": self._n_entry_expired},
+                         "entry_expired": self._n_entry_expired,
+                         "entry_nofill": self._n_entry_nofill},
         }
 
     def from_state(self, st: dict[str, Any]) -> None:
@@ -267,6 +274,7 @@ class HarvestLedger:
         self._n_registered = int(cov.get("registered", 0))
         self._n_capped = int(cov.get("capped", 0))
         self._n_entry_expired = int(cov.get("entry_expired", 0))
+        self._n_entry_nofill = int(cov.get("entry_nofill", 0))
 
     def prune_closed(self, ids: Iterable[str] | None = None) -> int:
         """Drop CLOSED/CANCELLED tranches (bounded memory on a long run). Without `ids`, prunes

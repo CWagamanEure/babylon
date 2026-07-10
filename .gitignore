@@ -33,3 +33,6 @@ other_repo_notes/
 
 # Regenerable data artifacts (too large for GitHub 100MB limit)
 markout_study/out/*.npz
+
+# DuckDB spill / temp (session-local)
+.tmp/

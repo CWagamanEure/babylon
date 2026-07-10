@@ -1,0 +1,24 @@
+[Unit]
+Description=Babylon rolling-WF basket paper follower (research/data/rolling_wf.py live basket)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/bablyon
+# Paper-copies the frozen top-20 (wallet, coin, horizon) basket from
+# data/derived/rolling_wf/live_basket.parquet: enter 2min after a basket wallet's detected open
+# in ITS basket coin, exit on the row's frozen horizon clock (NEVER mirror the wallet's exit —
+# the audits showed mirroring exits kills the edge). PAPER ONLY (PaperExecutor; no signing code
+# exists in the repo). Refresh flow (monthly, option A): re-run the batch pipeline + rolling_wf
+# live LOCALLY, then scripts/deploy_basket.sh (rsyncs the new basket + restarts this unit).
+# Checkpoint/manifest/realized journal live in data/follow/basket_live/.
+ExecStart=/root/bablyon/.venv/bin/python -m babylon.follow.basket_main \
+  --state-dir data/follow/basket_live --tranche-usd 50 --entry-lag-s 120
+Restart=always
+RestartSec=30
+StandardOutput=append:/root/bablyon/data/follow/basket_live.log
+StandardError=append:/root/bablyon/data/follow/basket_live.log
+
+[Install]
+WantedBy=multi-user.target

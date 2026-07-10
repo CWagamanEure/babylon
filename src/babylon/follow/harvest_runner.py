@@ -54,6 +54,7 @@ class HarvestRunner:
         roster: list[str] | None = None, budget_usd: float = 1000.0,
         staleness_ms: int = 30_000, exit_staleness_ms: int = 300_000,
         truthup_chunk: int = 20, taker_only: bool = True, conviction_only: bool = True,
+        basket: dict[tuple[str, str], int] | None = None, skip_leading: bool = False,
     ) -> None:
         self._ledger = ledger
         self._notional = dict(notionals)     # per-wallet per-event tail-aware notional (USD)
@@ -66,6 +67,11 @@ class HarvestRunner:
         self._truthup_chunk = max(1, truthup_chunk)
         self._taker_only = taker_only
         self._conviction_only = conviction_only
+        # basket mode: only (wallet, coin) pairs present spawn tranches, each at ITS frozen
+        # horizon (ms). skip_leading drops startPosition-seeded opens (the live analog of the
+        # estimand's inherited_basis exclusion — their true entry predates observation).
+        self._basket = dict(basket) if basket else None
+        self._skip_leading = skip_leading
         self._books: dict[str, tuple[Book, int]] = {}
         self._contracts: dict[str, Decimal] = {}   # tranche id -> filled entry contracts (for exit)
         self._cash = Decimal(str(budget_usd))      # paper cash; fills book their cashflow
@@ -76,6 +82,17 @@ class HarvestRunner:
     @property
     def n_roster(self) -> int:
         return len(self._roster)
+
+    def feed_universe(self) -> list[str]:
+        """Coins needing a live book: the entry universe PLUS coins held by restored OPEN/PENDING
+        tranches or nonzero net positions (audit F3: a coin dropped from the basket on a refresh
+        would otherwise never get a book again and its open tranches could never exit)."""
+        coins = set(self._universe)
+        coins |= {t.coin for t in self._ledger.open_tranches()}
+        coins |= {t.coin for t in self._ledger._tranches.values()  # noqa: SLF001
+                  if t.state.value == "pending_entry"}
+        coins |= {c for c, p in self._ex.net_positions().items() if p != 0}
+        return sorted(coins)
 
     def on_book(self, coin: str, book: Book, ts: int) -> None:
         self._books[coin] = (book, ts)
@@ -113,13 +130,20 @@ class HarvestRunner:
         for coin, ev in opens:
             if coin not in self._universe:
                 continue
+            horizon_ms: int | None = None
+            if self._basket is not None:                 # basket mode: pair-filter + frozen horizon
+                horizon_ms = self._basket.get((wallet, coin))
+                if horizon_ms is None:
+                    continue
+            if self._skip_leading and ev.is_leading:     # inherited_basis analog: entry unobserved
+                continue
             if (self._taker_only and not ev.taker_open) or \
                (self._conviction_only and not ev.conviction):
                 continue
             eid = f"{wallet}:{coin}:{ev.entry_t}:{ev.tid}"
             if self._ledger.on_open_event(
                     event_id=eid, wallet=wallet, coin=coin, direction=ev.direction,
-                    notional=notional, open_event_ms=ev.entry_t):
+                    notional=notional, open_event_ms=ev.entry_t, horizon_ms=horizon_ms):
                 n += 1
         return n
 

@@ -7,6 +7,8 @@
 #   DROPLET=root@host DEST=/root/bablyon ./scripts/deploy_follow.sh
 set -euo pipefail
 
+# ⚠️ STALE: this IP is dead and this script deploys the FALSIFIED edge3 strategy (see audit/edge3).
+# Use scripts/deploy_basket.sh -> root@167.71.29.107 (babylon-basket) instead.
 DROPLET="${DROPLET:-root@104.248.116.0}"
 KEY="${KEY:-$HOME/.ssh/id_ed25519}"
 DEST="${DEST:-/root/bablyon}"

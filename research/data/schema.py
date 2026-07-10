@@ -75,6 +75,19 @@ ASSET_CTX_NUMERIC = ("funding", "open_interest", "prev_day_px", "day_ntl_vlm", "
 ASSET_CTX_PART_COLUMNS = tuple(c for c in ASSET_CTX_COLUMNS if c not in PARTITION_COLS)
 ASSET_CTX_SCHEMA_VERSION = "asset_ctx_v1_allcoins_2026-07-07"
 
+# ---- Reservoir alt-flow contract (research alt lane; ALL coins; 5-min signed-notional aggregate) --------
+# FIREWALL (RESERVOIR_ALT_FILLS_SPEC §0): a THIRD-PARTY, NON-block-identified source. It feeds the SEPARATE
+# `alt_flow` view ONLY and MUST NEVER be unioned into `fills` (node_fills majors, the Gate-A tape). `fills`
+# above is node_fills MAJORS ONLY; the literal `raw/fills/` glob anchor is a firewall boundary — never a
+# `raw/**` recursive glob. alt_flow is a DERIVED (projected/aggregated) lane, not raw: per (wallet, coin,
+# 5-min bucket, crossed) SIGNED-NOTIONAL flow (side folded into the sign at ingest; both counterparties →
+# Σ flow_signed over all rows = 0; OFI = filter crossed=true). flow_signed is DOUBLE USD — a SIGNAL aggregate
+# (asset_ctx reference-data convention), NOT the exact-string money ledger of node_fills. Reservoir stays the
+# re-pullable source of truth for per-fill fields (px/sz/start_position/liq/fees) not kept here. Verified
+# byte-identical to node_fills on the majors overlap before aggregation (audit 2026-07-09).
+ALT_SCHEMA_VERSION = "reservoir_altflow_v1_5min_signednotional_2026-07-09"
+ALT_FLOW_COLUMNS = ("wallet", "coin", "bucket", "crossed", "flow_signed", "n")   # + hive month/day
+
 # Leaf-only globs (the `day=*` / `coin=*` segment skips the manifest.parquet that lives one level up —
 # a Hive '**' glob would otherwise error on the manifest's missing partition key).
 DATASET_GLOBS = {
@@ -82,6 +95,7 @@ DATASET_GLOBS = {
     "asset_ctx": "raw/asset_ctx/month=*/day=*/*.parquet",
     "bars": "raw/bars/coin=*/*.parquet",
     "wallet_features": "derived/wallet_features/month=*/*.parquet",
+    "alt_flow": "derived/alt_flow/month=*/day=*/*.parquet",   # Reservoir all-coin 5-min flow (SEPARATE; never `fills`)
 }
 
 
@@ -107,3 +121,7 @@ CREATE OR REPLACE VIEW fills AS
 def simple_view_sql(name: str, glob: str) -> str:
     return (f"CREATE OR REPLACE VIEW {name} AS "
             f"SELECT * FROM read_parquet('{glob}', hive_partitioning=true, union_by_name=true);")
+
+# NB the `alt_flow` view (Reservoir 5-min flow aggregate) is pre-normalized at ingest, so it uses the plain
+# simple_view_sql pass-through above (columns: wallet, coin, bucket[5-min epoch-ms], crossed, flow_signed,
+# n, month, day). It is a SEPARATE view — never unioned into `fills` (firewall §0).

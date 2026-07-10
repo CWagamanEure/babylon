@@ -33,7 +33,7 @@ def connect(data_dir: Path = DATA_DIR, warn_missing: bool = True) -> duckdb.Duck
             continue
         if name == "fills":
             con.execute(schema.fills_views_sql(absglob))
-        else:
+        else:                                           # incl. alt_flow — SEPARATE view, never unioned into `fills`
             con.execute(schema.simple_view_sql(name, absglob))
         registered.append(name)
     con.execute("SET TimeZone='UTC'")
@@ -47,8 +47,10 @@ def render_catalog(data_dir: Path = DATA_DIR) -> str:
     parts = []
     for name, rel in schema.DATASET_GLOBS.items():
         absglob = str(data_dir / rel)
-        parts.append(schema.fills_views_sql(absglob) if name == "fills"
-                     else schema.simple_view_sql(name, absglob))
+        if name == "fills":
+            parts.append(schema.fills_views_sql(absglob))
+        else:
+            parts.append(schema.simple_view_sql(name, absglob))
     return "\n".join(parts)
 
 

@@ -1,3 +1,6 @@
+> # ⛔ SUPERSEDED — DO NOT EXECUTE (F3, 2026-07-06)
+> Preregistration v1. Retains real-data injection / pre-firewall language. Superseded by `PREREGISTRATION_v2` + the authoritative Gate-A set (`GATE_A_FROZEN_CONFIG`, `SCORE_AND_OUTCOME_SPEC`, `EPISODE_SPEC`, `POSITIVE_CONTROL_SPEC`, `AUDIT_ONLY_PLAN`). Provenance only; **removed from active execution references**.
+
 # PRE-REGISTRATION — wallet-discovery experiment
 
 Frozen before any data is touched. Values marked **[PENDING AUDIT]** are finalized from the coverage/power audit (`POWER_AND_COVERAGE_AUDIT_PLAN.md`) run on the training window *only*, then frozen; they are not tuned on evaluation data. Anything not listed here is either a pre-registered sensitivity (`CONFIG_FORKS.md`) or exploratory (cannot set the headline).

@@ -1,3 +1,6 @@
+> # ⛔ SUPERSEDED — DO NOT EXECUTE (F3, 2026-07-06)
+> This document describes a real-data synthetic-edge injection and a per-month basket-return SD that **breach the counts-only firewall**. It is retained for provenance only and is **removed from all active execution references**. The authoritative power/control procedure is `POSITIVE_CONTROL_SPEC` (nullized base) + `AUDIT_ONLY_PLAN`.
+
 # POWER_AND_COVERAGE_AUDIT_PLAN
 
 Run on the **training window only**, before the first evaluation fold. Its outputs freeze the `[PENDING AUDIT]` values and decide whether stages/bands are powered enough to keep. It is a gate on the design, not a result.

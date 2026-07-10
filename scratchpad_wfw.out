@@ -1,0 +1,32 @@
+
+=== WALK-FORWARD (train fold -> next fold OOS)  mu=w ===
+
+ fold 0: train[2025-08-01,2025-10-01) -> test[2025-10-01,2025-12-01)
+   1h: n=1823 p2mean= +3.62 CI[ +1.65, +5.60] sgn=52%
+   2h: n=1948 p2mean= +2.66 CI[ +0.18, +5.14] sgn=52%
+   4h: n=1939 p2mean= -2.08 CI[ -5.13, +0.97] sgn=50%
+   8h: n=2221 p2mean= +8.39 CI[ +4.32,+12.45] sgn=54%
+
+ fold 1: train[2025-10-01,2025-12-01) -> test[2025-12-01,2026-02-01)
+   1h: n=1764 p2mean= -0.26 CI[ -1.70, +1.18] sgn=54%
+   2h: n=1745 p2mean= -0.28 CI[ -2.20, +1.64] sgn=51%
+   4h: n=1872 p2mean= -0.91 CI[ -3.64, +1.81] sgn=52%
+   8h: n=2164 p2mean= +2.67 CI[ -0.55, +5.90] sgn=54%
+
+ fold 2: train[2025-12-01,2026-02-01) -> test[2026-02-01,2026-04-01)
+   1h: n=1343 p2mean= +1.22 CI[ -0.73, +3.18] sgn=52%
+   2h: n=1408 p2mean= +2.86 CI[ +0.35, +5.36] sgn=52%
+   4h: n=1480 p2mean= +2.22 CI[ -0.78, +5.22] sgn=52%
+   8h: n=1600 p2mean= +7.70 CI[ +3.58,+11.81] sgn=57%
+
+ fold 3: train[2026-02-01,2026-04-01) -> test[2026-04-01,2026-06-29)
+   1h: n=2288 p2mean= +2.09 CI[ +1.09, +3.08] sgn=55%
+   2h: n=2297 p2mean= +1.76 CI[ +0.41, +3.12] sgn=55%
+   4h: n=2242 p2mean= +2.63 CI[ +0.76, +4.49] sgn=53%
+   8h: n=2337 p2mean= +6.55 CI[ +4.17, +8.94] sgn=55%
+
+ POOLED across folds (selected cohort OOS timing_alpha):
+   1h: N=7218 mean= +1.74 CI[ +0.96, +2.52] sgn=53% signp=5.7e-08 MDE=1.11
+   2h: N=7398 mean= +1.73 CI[ +0.71, +2.74] sgn=53% signp=4.4e-06 MDE=1.45
+   4h: N=7533 mean= +0.45 CI[ -0.86, +1.77] sgn=52% signp=2.2e-03 MDE=1.88
+   8h: N=8322 mean= +6.25 CI[ +4.53, +7.97] sgn=55% signp=7.0e-19 MDE=2.46

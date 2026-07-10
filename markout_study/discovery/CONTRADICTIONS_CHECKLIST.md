@@ -50,3 +50,16 @@ Verifies the documents agree after the simplification pass. Authoritative Gate-A
 3. `ARCHITECTURE.md` diagram lines 37/13/47 use "copyability score" for deployment — correct (=Gate B); optional cosmetic relabel.
 
 None of C affects the Gate-A verdict, eligibility, score, or freeze. The eight authoritative Gate-A docs agree on every axis in table A.
+
+## D. Implementation-audit resolutions (2026-07-06, after the 3-agent architecture swarm)
+Rulings applied to `IMPLEMENTATION_ARCHITECTURE.md` v2; no new statistical gates added.
+| Item | Resolution |
+|---|---|
+| **R1 flip residual < $100** | **Dust wins.** A flip always updates the ledger and terminates the prior episode, but a residual opening leg below $100 does **not** open a new qualifying episode. |
+| **R2 selection denominator** | **Scoreable cross-section.** Top 10% = top 10% of wallets with valid finite θ̂ in the frozen ranking cross-section; min 20 / max 50; **never pad with unscoreable**; **< 20 scoreable ⇒ no valid basket** (fold unrankable). |
+| **R3 wash/self-cross** | **Waived for v1.0** — no labelled precision claim. Exact same-wallet/both-sides/same-`tid` records are **data-integrity anomalies** (self-trade prevention should preclude them): inspect/quarantine the affected event/stream, do **not** label the wallet as wash. Related-address wash not reliably identifiable from this tape. |
+| **F1 GLOBAL_SEED** | Pinned in `GATE_A_FROZEN_CONFIG` = `6439d8b3…2805288` (`sha256("GATE_A_V1.0_LOCKED_RETROSPECTIVE_2026-07-06")`). All bootstrap/control seeds derive from it. |
+| **F2 purge formula** | Every purge statement = exactly `endpoint_price_ts(e,h) < C` (lattice endpoint close ts; no `entry+h`, no +5 min). Fixed in `LEAKAGE_AUDIT_PLAN`. |
+| **F3 superseded docs** | `POWER_AND_COVERAGE_AUDIT_PLAN.md` and `PREREGISTRATION.md` stamped **SUPERSEDED — DO NOT EXECUTE**; removed from active execution references. |
+| **Firewall (σ̂)** | σ̂ computed internally **only** for the finite/non-degenerate-scale check; emit a **scale-valid boolean only** — never display the σ̂ scalar, never persist/sort/rank/expose the per-wallet real-markout vector; σ̂ cannot influence any threshold/design choice; positive controls **recompute their own scales** from each nullized/injected dataset. |
+

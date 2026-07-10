@@ -76,6 +76,7 @@
 > HHI is Table-3-only.
 >
 > **P15 — StableEdge is the robust PRIMARY markout estimator (median-of-means over weekly blocks).** The
+> ⚠️ P15 SUPERSEDED (2026-07-08) by WALLET_FEATURES_TIER2_MARKOUT_ARCH.md R1: median-of-means is BIASED under skew (±7bp); headline = wallet-day-weighted mean + cluster CI; MoM diagnostic-only.
 > headline per-horizon edge is `stable_edge_h = median_week( mean_{wallet-coin-day}( M_{d,h} ) )` (+ a 20%
 > trimmed-mean variant), NOT the ordinary mean (heavy tails ⇒ one trade/day/week dominates). Store the
 > persistence+concentration+floor quartet (`positive_week_fraction`, `markout_without_best_week`,

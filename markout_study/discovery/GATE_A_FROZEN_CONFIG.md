@@ -2,6 +2,8 @@
 
 > **FROZEN v1.0.** No threshold, eligibility rule, estimator, selection rule, outcome definition, or verdict rule may be modified during the audit. The counts-only feasibility audit may only rule each frozen value *feasible-as-written* or *infeasible*. Any alteration requires a separately versioned Gate-A design and restarts the freeze.
 
+> **FROZEN CONSTANT (F1).** `GLOBAL_SEED = 6439d8b356ed63376290c04f7856ab238d15f86781bb362da3f97e2ed2805288` (= `sha256("GATE_A_V1.0_LOCKED_RETROSPECTIVE_2026-07-06")`). All stochastic seeds — weekly cluster bootstrap `int(sha256(GLOBAL_SEED∥w∥C)) mod 2³²` and positive-control sims — derive from this single pinned value. Fixed before any nullized/real run.
+
 **Framing:** this 11-month tape has already been explored extensively, so a positive Gate-A result is a **locked retrospective validation / pilot**, **not** genuinely confirmatory. A confirmatory result would require untouched historical backfill or prospective future months. **All thresholds below are fixed before the locked retrospective run and cannot be changed after the Gate-A outputs are inspected** (not "a priori" — this tape and its specs have already been explored). The counts audit only *checks feasibility*. No latency or costs anywhere in Gate A.
 
 | Item | Frozen value |

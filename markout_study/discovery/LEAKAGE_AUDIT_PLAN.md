@@ -11,7 +11,7 @@ The prior study's headline leak was whole-window eligibility. This experiment fi
 6. **Cost/latency** — Gate-B/C only; fixed once `DEPLOYMENT_INPUT_FREEZE.md` is signed; never consulted during Gate A.
 
 ## Two boundary rules (frozen)
-- **Training score:** every outcome **endpoint** feeding a score must lie **strictly before C** — the endpoint close timestamp `o0+h+5min < C` (SPEC/EPISODE §Bar semantics), i.e. an 8 h purge at the mid band.
+- **Training score:** every outcome **endpoint** feeding a score must lie **strictly before C** — exactly `endpoint_price_ts(e,h) < C` where `endpoint_price_ts` is the lattice endpoint **close** timestamp (NOT `entry+h` raw, NO +5 min), i.e. an 8 h purge at the mid band. (F2, matches SPEC §1 / CHANGELOG §8.)
 - **Evaluation month:** an episode is assigned to month `m` by its **signal timestamp**; its 1–8 h endpoint **may extend past month-end** provided the endpoint exists on the tape and is **never used for any as-of-C selection**. This is the return being measured, not a leak.
 - **Final-month right-censoring:** episodes whose endpoint bar does not exist on the tape (last ~8 h) are **omitted** from the outcome — **never zero-filled** and never assigned an artificial value.
 
