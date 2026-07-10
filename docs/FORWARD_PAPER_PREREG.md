@@ -1,5 +1,7 @@
 # PRE-REGISTRATION — forward paper test of the rolling-WF basket process (frozen 2026-07-10)
 
+> Sealed in git: commit `c9fad88` (2026-07-10) — the code+docs state of record for this protocol.
+
 The adjudicating experiment for the rolling walk-forward result (label of record: "suggestive,
 regime-concentrated, variant-selected, placebo-4σ non-random; n=5 months" — 4-agent swarm 2026-07-09).
 Live system: `babylon-basket` on droplet 167.71.29.107 (`src/babylon/follow/basket_main.py`), paper-only.

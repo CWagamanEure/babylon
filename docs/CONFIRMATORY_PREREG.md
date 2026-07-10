@@ -1,5 +1,7 @@
 # PRE-REGISTERED confirmatory protocol — wallet entry-timing edge (frozen 2026-07-09)
 
+> Sealed in git: commit `c9fad88` (2026-07-10) — the code+docs state of record for this protocol.
+
 ⚠️ ASTERISK (pre-registered honestly): the Aug–Jun tape, INCLUDING the OOS window, has been examined in prior
 exploratory analyses this week. This run is therefore **protocol-clean but data-contaminated** — survivors are
 PROVISIONAL until re-confirmed on true forward data (July 2026+, untouched). The protocol below is frozen
