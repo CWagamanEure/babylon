@@ -1,0 +1,24 @@
+[Unit]
+Description=Babylon alt-complex-timing paper follower (research FINDINGS Result 9; PAPER ONLY)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/bablyon
+# Hourly, polls the RECENCY-GATED top-1500 timing-skill cohort's alt fills
+# (data/derived/alt_timing/cohort.json; export_timing_cohort.py, monthly refresh), computes the aggregate
+# breadth tilt (#net-long - #net-short)/#active over the alt universe, and APPENDS a JSONL record
+# (tilt, smoothed, position, basket+hedge mids) for OFFLINE evaluation per docs/ALT_TIMING_PAPER_PREREG.md.
+# The follower only records signal + prices; the neutralized-basket net Sharpe is computed offline. PAPER
+# ONLY (no signing/capital code exists in the repo). ~1 call/sec throttle -> ~25min/sweep, shares the HL
+# weight budget with babylon-basket. State (checkpoint, alt_timing_log.jsonl) in data/follow/alt_timing_live/.
+ExecStart=/root/bablyon/.venv/bin/python -m babylon.follow.alt_timing_main \
+  --state-dir data/follow/alt_timing_live
+Restart=always
+RestartSec=60
+StandardOutput=append:/root/bablyon/data/follow/alt_timing_live.log
+StandardError=append:/root/bablyon/data/follow/alt_timing_live.log
+
+[Install]
+WantedBy=multi-user.target
