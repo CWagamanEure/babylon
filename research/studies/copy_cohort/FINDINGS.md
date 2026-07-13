@@ -229,3 +229,31 @@ not a markout claim, and inherits the same non-independence caveat).
 baselines), `data/derived/copy_cohort/capday_powered_report.json` (neutralized pooled cluster-bootstrap),
 `data/derived/copy_cohort/capday_base.parquet` (8.8M wallet-days). Correctness + leakage audits and
 steelman/prosecute passes recorded this session.
+
+### 2026-07-12 addendum — RUN THE BOOK (not markout-averaging), CAP=100k (`book.py`)
+
+**User correction (both valid):** (1) the intended cap is **100k**, not 500k/1M; (2) averaging per-position
+markout bps is NOT running the book — a real follower SIZES each entry and the PORTFOLIO's dollar P&L /
+equity curve is the result. Built the actual book: top-30 @100k, follow forward opening-taker entries, size
+each at the **q50/q75 percentile of the wallet's PRIOR opening notionals in that coin** (expanding,
+leakage-safe), exit 8h, net of 2.6bp round-trip; benchmarked vs 200 random-30 cohorts with the same sizing.
+
+**The correction is validated — the book looks materially better than the markout average, but is thin,
+concentration-driven, and not yet significant vs random:**
+- **Equal-weighted net markout ≈ −0.3 bp (flat)** — matches the earlier "no per-position edge." But the
+  **dollar-weighted, q-sized book is POSITIVE: +8.7 bp (q50) / +23.1 bp (q75) net** (gross +11.3/+25.6),
+  **daily Sharpe 1.56 / 1.96** vs random-cohort Sharpe median ~0.78. So dollar-weighting by the q-clip flips
+  a flat average into a positive book — exactly the user's point.
+- **But it does NOT clear the random-cohort book** run with the identical sizing rule: p(beat random net$)
+  = 0.398 (q50) / 0.279 (q75); p(beat random Sharpe) = 0.144 (q50) / **0.060 (q75, marginal, post-hoc best-of-2)**.
+  Cohort net$ ($1,411 / $7,638 total over 8 mo) sits below the random p90 ($7.4k / $16.1k).
+- **Thin + fragile:** only **217 positions / 44 wallets** over 8 months (@100k selects low-frequency small
+  traders; 22/239 dropped as un-sizeable), median clip $3.7k/$8.8k, **win rate exactly 0.50** → the positive
+  is carried by a few large winning clips (concentration = the over-carry mechanism), not breadth.
+
+**Read:** suggestive-positive, UNDERPOWERED — not dead, not confirmed. The book method is the right lens and
+it beats random on the point estimates (Sharpe ~2×, net$ 4–14× the random median), but N=217 can't push
+p<0.05 and the q75 Sharpe p=0.06 is post-hoc. The thinness is the binding constraint. To resolve: hold to
+the wallet's OWN exit / longer horizon (bigger moves, more $/trade), include ALTS (need alt closed_pnl
+re-pull — where these wallets trade far more), don't drop un-sizeable entries (default clip), and treat q as
+pre-registered not best-of. Artifacts: `book_report.json`, `book_equity.json`, `book.py`.
