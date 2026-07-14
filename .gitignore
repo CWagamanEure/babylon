@@ -30,9 +30,10 @@ logs/
 # Local research scratch + cross-repo data dumps (multi-GB: jsonl extracts, monthly parquets)
 scratch_conv/
 other_repo_notes/
+scratchpad_*.out
 
 # Regenerable data artifacts (too large for GitHub 100MB limit)
-markout_study/out/*.npz
+research/markout_study/out/*.npz
 
 # DuckDB spill / temp (session-local)
 .tmp/

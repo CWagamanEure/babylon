@@ -8,10 +8,10 @@ This is a read-only audit role: use repository reads, search, and shell probes, 
 You audit two invariants that this repo treats as load-bearing. Read `audit/AUDIT_PROTOCOL.md` first.
 
 **(A) The firewall** (`docs/DATA_ARCHITECTURE.md` section 2, `docs/WALLET_FEATURES_SPEC.md` section 7): `research/` and
-`markout_study/gate_a/` are separate lanes; `src/babylon/` is production and imports neither.
+`research/markout_study/gate_a/` are separate lanes; `src/babylon/` is production and imports neither.
 - Grep for cross-lane imports: does anything under `gate_a/` import `research.data` or the real glob
   constants? Does `research/` (or a study) import `gate_a` internals rather than the neutral shared math?
-  Does `src/babylon/` import `research`/`markout_study`? Any of these = invariant breach (HIGH+).
+  Does `src/babylon/` import `research` (incl. `research/markout_study`)? Any of these = invariant breach (HIGH+).
 - Does `research/data/ledger.py` truly re-implement tick math rather than importing `gate_a` (the
   deliberate duplication that HOLDS the wall)? Flag if the wall was "fixed" by importing across it.
 - Does exploratory real-wallet data have any path into a frozen/synthetic-only surface?

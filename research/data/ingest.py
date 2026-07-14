@@ -1,7 +1,7 @@
 """Streaming restore of Hyperliquid `node_fills_by_block` → the authoritative majors fill tape.
 
 Promoted from scratchpad per docs/DATA_ARCHITECTURE.md (the crash-lost `full_backfill.py`), rebuilt
-faithfully from markout_study/discovery/RESTORE_PLAN_v1.md §1–2. This is the ONLY writer of
+faithfully from research/markout_study/discovery/RESTORE_PLAN_v1.md §1–2. This is the ONLY writer of
 `data/raw/fills/` — the immutable, archive-sourced tape the frozen Gate-A pipeline consumes.
 
 Per hourly S3 object (`s3://hl-mainnet-node-data/node_fills_by_block/hourly/YYYYMMDD/{H}.lz4`,

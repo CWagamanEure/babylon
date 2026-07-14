@@ -4,7 +4,7 @@ The research lane of Babylon. **Never imported into the deployable engine (`src/
 shipped.** This is where the Hyperliquid tape is restored, queried, and turned into per-trader features.
 
 > **Firewall (load-bearing).** `research/` computes *real* per-wallet PnL and markout — it is the
-> **exploratory** lane. It must **never** feed the frozen Gate-A pipeline in `markout_study/gate_a/`
+> **exploratory** lane. It must **never** feed the frozen Gate-A pipeline in `research/markout_study/gate_a/`
 > (that stays on synthetic / nullized data). Two lanes, one wall. See `docs/DATA_ARCHITECTURE.md §2`
 > and `docs/WALLET_FEATURES_SPEC.md §7`.
 
@@ -95,7 +95,7 @@ python -m research.data.ingest manifest              # consolidate shards → ma
 ```
 
 Bump `SCHEMA_VERSION` in `schema.py` to force re-ingest on a contract change. Validate a fresh month
-against the recorded oracle in `markout_study/discovery/RESTORE_PLAN_v1.md`.
+against the recorded oracle in `research/markout_study/discovery/RESTORE_PLAN_v1.md`.
 
 ## Episodes (`episodes_build.py`)
 

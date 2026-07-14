@@ -52,7 +52,7 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-# repo root on sys.path so research/ and markout_study/ (not installed packages) import in tests
+# repo root on sys.path so research/ (incl. research/markout_study/) imports in tests (not installed packages)
 pythonpath = ["."]
 
 [tool.mypy]

@@ -7,12 +7,12 @@ quantitatively driven.
 The repo is **two lanes behind one firewall**:
 
 - **`src/babylon/`** — the **deployable engine**. Production code only. Never imports from research.
-- **`research/`** + **`markout_study/`** — the **analysis workbench**. Restores and queries the
-  Hyperliquid tape, characterizes traders, runs the edge studies. Never shipped, never imported into the
-  engine.
+- **`research/`** — the **analysis workbench** (includes `research/markout_study/`, the folded-in edge
+  study). Restores and queries the Hyperliquid tape, characterizes traders, runs the edge studies. Never
+  shipped, never imported into the engine.
 
 The firewall is load-bearing: the research lane computes *real* per-wallet PnL/markout; the frozen
-validation pipeline (`markout_study/gate_a/`) runs only on synthetic/nullized data. They must not cross.
+validation pipeline (`research/markout_study/gate_a/`) runs only on synthetic/nullized data. They must not cross.
 See [`docs/DATA_ARCHITECTURE.md`](docs/DATA_ARCHITECTURE.md).
 
 ## Repo map
@@ -21,7 +21,7 @@ See [`docs/DATA_ARCHITECTURE.md`](docs/DATA_ARCHITECTURE.md).
 | --- | --- | --- |
 | `src/babylon/` | Deployable async trading engine (paper + backtest today). | [`src/babylon/README.md`](src/babylon/README.md) |
 | `research/` | Analysis workbench — DuckDB query layer over the Parquet tape, ingest, episodes, features. | [`research/README.md`](research/README.md) |
-| `markout_study/` | The trader-markout / wallet-selection edge study (exploratory arc + frozen Gate-A pipeline). | [`markout_study/README.md`](markout_study/README.md) |
+| `research/markout_study/` | The trader-markout / wallet-selection edge study (exploratory arc + frozen Gate-A pipeline). | [`research/markout_study/README.md`](research/markout_study/README.md) |
 | `data/` | The Parquet lake (gitignored, regenerable): `raw/` tape + `derived/`. | see research README |
 | `docs/` | Design & architecture notes. | [`docs/README.md`](docs/README.md) |
 | `audit/` | Adversarial audit scaffolds + findings from the edge investigations. | — |

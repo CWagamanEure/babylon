@@ -65,7 +65,7 @@ can't produce all four, I have not earned the null. Treat that question as alway
 ## Research conventions (see also `docs/BABYLON_PITFALLS.md` and `docs/BABYLON_CONVENTIONS.md`)
 - Report only out-of-sample, multiplicity-controlled numbers as results; never an in-sample figure.
 - **Record findings before moving on.** At the END of each stage, before starting the next, update the
-  findings ledger (`markout_study/docs/FINDINGS_LEDGER.md`, or the study's equivalent): question, method,
+  findings ledger (`research/markout_study/docs/FINDINGS_LEDGER.md`, or the study's equivalent): question, method,
   calibrated result, caveats, artifacts. It is the accumulating, report-ready backbone - the user assembles
   the final report from it. Also register dead-ends (so we don't re-run them) and live underpowered positives
   (so they aren't lost). This is a required step, not optional.
@@ -98,12 +98,12 @@ research/data/               # the versioned research data layer
   schema.py                  # full fill contract (all node_fills fields) + DuckDB views; source of truth
   validate.py                # replay a month's counts vs the RESTORE_PLAN oracle (zhash/liq/transitions)
   db.py                      # connect() -> DuckDB views over the parquet lake (query layer, no ETL)
-markout_study/gate_a/        # frozen Gate-A v1.0 pipeline (consumes the tape; firewalled)
-markout_study/discovery/     # frozen specs + audits - RESTORE_PLAN_v1.md is the ingest spec
+research/markout_study/gate_a/        # frozen Gate-A v1.0 pipeline (consumes the tape; firewalled)
+research/markout_study/discovery/     # frozen specs + audits - RESTORE_PLAN_v1.md is the ingest spec
 ```
 
 **The fills tape (`data/raw/fills/`).** Restored from `s3://hl-mainnet-node-data/node_fills_by_block`
-(requester-pays, us-east-1) per `markout_study/discovery/RESTORE_PLAN_v1.md`. It is the ONLY source
+(requester-pays, us-east-1) per `research/markout_study/discovery/RESTORE_PLAN_v1.md`. It is the ONLY source
 with per-wallet `startPosition` + block identity that Gate-A needs (the old cand2/cohort/his projections
 dropped it - do NOT substitute them). Every node_fills field is captured (full liquidation struct incl markPx, both block timestamps);
 monetary/size fields are stored as **exact strings** (px, sz, start_position, closed_pnl, fee,

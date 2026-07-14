@@ -2,7 +2,7 @@
 
 The production lane. Async-first quant trading engine for [Hyperliquid](https://hyperliquid.xyz).
 Installs as the `babylon` package (`pyproject.toml`). **Production code only — never imports from
-`research/` or `markout_study/`.**
+`research/` (incl. `research/markout_study/`).**
 
 > Everything here runs in **paper / backtest only**. No code path places a real signed order yet — the
 > live signing executor and terminal UI are the genuinely-absent pieces (see status table).

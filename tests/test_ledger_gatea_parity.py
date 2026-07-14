@@ -1,4 +1,4 @@
-"""P9d cross-lane parity: research.data.ledger MUST agree with markout_study.gate_a.
+"""P9d cross-lane parity: research.data.ledger MUST agree with research.markout_study.gate_a.
 
 `research/data/ledger.py` deliberately RE-IMPLEMENTS the exact-tick position math instead of importing
 `gate_a` (that duplication is what holds the firewall — the research lane must be reachable without
@@ -16,8 +16,8 @@ from __future__ import annotations
 import pytest
 
 from research.data import ledger
-from markout_study.gate_a import common as gc
-from markout_study.gate_a import episodes as ge
+from research.markout_study.gate_a import common as gc
+from research.markout_study.gate_a import episodes as ge
 
 COINS = ["BTC", "ETH", "SOL", "HYPE"]
 # decimal-string sizes spanning sub-tick noise, exact ticks, and large positions
