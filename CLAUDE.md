@@ -62,7 +62,7 @@ can't produce all four, I have not earned the null. Treat that question as alway
 
 ---
 
-## Research conventions (see also memory: babylon-pitfalls, babylon-conventions)
+## Research conventions (see also `docs/BABYLON_PITFALLS.md` and `docs/BABYLON_CONVENTIONS.md`)
 - Report only out-of-sample, multiplicity-controlled numbers as results; never an in-sample figure.
 - **Record findings before moving on.** At the END of each stage, before starting the next, update the
   findings ledger (`markout_study/docs/FINDINGS_LEDGER.md`, or the study's equivalent): question, method,
@@ -75,7 +75,11 @@ can't produce all four, I have not earned the null. Treat that question as alway
   firewall-leakage, data-integrity, determinism-repro, docs-consistency); they all follow the shared
   `audit/AUDIT_PROTOCOL.md` (resource safety, verify-before-report, blast-radius severity, no edits).
   Invoke by `subagent_type` for a swarm audit; add a run-specific scope note like `audit/00_GROUND_RULES.md`.
-- Decimal/async/Parquet/logging conventions and known statistical pitfalls live in the memory files.
+- **Instruction parity.** `CLAUDE.md`/`.claude/agents/` and `AGENTS.md`/`agents/` are tool-specific mirrors
+  of the same contract. Any substantive edit to one must update its counterpart in the same change.
+  `.codex/agents/*.toml` files are thin native wrappers and must keep targeting the matching role manuals.
+- Decimal/async/Parquet/logging conventions and known statistical pitfalls live in
+  `docs/BABYLON_CONVENTIONS.md` and `docs/BABYLON_PITFALLS.md`.
 
 ## Repo layout & the data pipeline (see docs/DATA_ARCHITECTURE.md for the full plan)
 

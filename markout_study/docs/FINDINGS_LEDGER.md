@@ -734,3 +734,122 @@ NET **+15.53bp**. (Fragile operating point: net +10 at >=10, +1.6 at >=12, −24
 disproportionately by a few small SOL/HYPE bursts and a hand-picked threshold. Not significant, not deployable;
 would need a variance-reduced/pooled powered design (or more test epochs) to resolve. Artifacts:
 `out/consensus_master.parquet`, `out/consensus_test_table.parquet`, `out/consensus_placebo.parquet`.
+
+---
+
+## HIGH-VOLUME WALLET OOS "WINNER'S CURSE" — RETRACTED as INCONCLUSIVE; the ledger has confirmed bugs (2026-07-11, 13-agent swarm + venue axis)
+
+**Trigger.** User challenge (correct, per the over-null gate): it is not credible that wallets doing 100k–700k
+trades are simply "winner's curse / negative-edge OOS." The `out/individual_persistence.parquet` result —
+Spearman(tr_vw, te_vw) = **−0.102** on 3541 high-N wallets; train-t≥3 "winners" OOS **−30.9bp [−72.9,+10.3]** —
+was labeled "no copyable individual edge." A 13-agent measurement-bias + wallet-forensics swarm (10/13 completed;
+the run kept getting killed by RAM-spike machine crashes, so it was throttled to concurrency 2 then finished
+by hand-synthesis from cached results) says that label is **NOT EARNED → INCONCLUSIVE**, for concrete reasons.
+
+**TWO CONFIRMED CODE BUGS in the ad-hoc ledgers** (`individual_persistence.py::per_close`, `steelman_features.py::ledger`,
+and by inheritance `maker_taker_split.py`) — both ABSENT from the audited reference `src/mkcommon.py` (`_avg_entry_scan`/
+`taker_entries`), which these scripts diverged from:
+1. **Carry-in / warm-start bug (CONFIRMED, decisive).** The ledgers seed `q=avg=0` at the wallet's FIRST cand2
+   fill (T0 = Aug 1 2025), ignoring the true pre-tape `start_position`. Wallets holding a position before T0 get a
+   fictitious inventory that the code mis-classifies (a decaying pre-existing LONG is read as *building a SHORT*),
+   pricing real market moves against phantom size. **Reproduced exactly on the two "physically impossible" wallets:**
+   - `0xb28cf864…`: true `start_position` = **+340,755 HYPE** at T0 (from restored `data/raw/fills`). Buggy te_vw
+     **−2042bp** (booked **−$5.36M** on HYPE test closes). Corrected (seed start_position + burn-in to first true
+     flat): te_vw **+27bp**. Cross-checked vs Hyperliquid's OWN `closed_pnl` field: **+$128,531** realized (HL's May
+     alone = +$125,534) — the buggy number is wrong in **SIGN**, confirmed against exchange accounting.
+   - `0x00c511ab…`: start_position **+309,892 HYPE**; te_vw **+1073bp → −10bp** corrected.
+   - **Prevalence: ~50% of Aug-2025-active wallets carry a nonzero pre-tape position; ~15–20% carry >$100k, 132 carry
+     >$1M** in ≥1 major → a meaningful fraction of the 3541-wallet TEST bps values (which drive the −0.102) are
+     contaminated to an unknown degree.
+2. **zhash (wash/self-trade) bug (CONFIRMED).** `per_close()` does NOT filter `zhash=true` fills (mkcommon excludes
+   `~zhash`). `0x00c511ab` is **93% zhash notional**, `0xb28c` 21%. Wash fills at stale/self-crossed prices feeding an
+   avg-cost recurrence is a second, independent source of impossible per-trade returns.
+
+**What is NOT the cause (both REFUTED on data):**
+- **Majors-only truncation / cross-book hedge-inversion — REFUTED.** Universe is 91% majors-notional by construction
+  (selected on ≥2000 majors fills); only 4.5% of wallets have <50% majors share. Hedge-signature test: majors↔alt
+  flow correlation is **POSITIVE** (+0.02..+0.45), the opposite of a hedge. Full-book recompute of the 8 anomalies
+  leaves 6/8 within ~0bp and does NOT flip the 2 impossible values (they're the carry-in bug, not scope). Mild
+  underpowered residual only: <50%-majors-share winners OOS +87.8bp [−56,+267] n=63 (inconclusive; and removing that
+  group makes the headline MORE negative, arguing against truncation).
+- **eqw-vs-vw weighting / winsorization — REFUTED.** The −0.102 is ALREADY the vw (capital-weighted) Spearman; eqw is
+  −0.084, t-stat −0.067, all negative; winsorized vw-vw = −0.10163 ≈ identical (Spearman is rank-robust). Weighting is
+  not manufacturing the sign.
+
+**REAL WINNERS EXIST (over-null gate vindicated — "no wallet is skilled" is FALSE):**
+- `0x0ddf9bae…`: **$45.3M** realized ($27.3M train + $18.1M test), positive BOTH windows (tr_vw +65 / te_vw +210),
+  99.6% majors so majors-only ≈ full-book. A skilled directional/relative-value trader (41% taker overall / 53% on
+  closes; heavy cross-coin BTC/ETH/SOL long-short structure; hold-time estimates conflict between the two forensic
+  probes — sub-minute scalp vs multi-day swing — unresolved, but profitability is not in doubt).
+- `0x5fffee25…`: **$836k** realized, positive both windows (te_vw +82), but **98.8% PURE MARKET MAKER** on HYPE (1.2%
+  taker). Real spread-capture income.
+
+**THE COPYABILITY REFRAME (PARTIAL-confirmed; the actionable point).** The recurring "tiny per-trade mean, huge |t| of
+the WRONG sign, eqw/vw disagree" signature = **market-makers booked as directional takers.** A follower can only copy
+TAKER (aggressor) fills; copying a maker's fills via market orders pays the exact spread the maker collects → you book
+the **reciprocal** of their edge. So the population edge doesn't generalize to a lagged copy-taker even where individual
+wallets are genuinely, hugely skilled — for a STRUCTURAL (maker/timing) reason, not "negative skill." Taker-only
+persistence came back a *powered null* (Spearman **−0.007 [−0.045,+0.029]**, N=3412) and taker-only winners **−164.6bp
+[−264.8,−60.3]** — BUT these numbers were computed on the SAME buggy ledger (carry-in + zhash unfixed) and must be
+RE-RUN on the corrected ledger before they can be trusted.
+
+**VERDICT (over-null-gate compliant).** The "high-volume wallets are winner's-curse / no copyable edge" conclusion is
+**RETRACTED to INCONCLUSIVE.** It is computed on a ledger with two confirmed bugs (carry-in warm-start + missing zhash
+filter) that corrupt ~15–20% of the population and produce sign-wrong, exchange-contradicted values; corrected cases
+move toward small plausible numbers, the OPPOSITE direction from "no edge." Real persistent winners demonstrably exist.
+The genuinely open question is narrower and structural: *after the ledger fix*, does any TAKER-only (copyable) selection
+persist — and does it concentrate on the coins where HL leads price discovery?
+
+**VENUE AXIS built (user hypothesis: edge lives where HL leads price discovery, not Binance).** Prior per-coin evidence
+already concentrated the signal in HYPE (carries the slope) + SOL, dead on ETH. CoinGecko cross-venue perp-volume
+dominance (HL vs legit tier-1 Binance/OKX/Bybit/Gate; `src/coin_venue_cg.py` → `out/coin_venue_cg.parquet`) confirms
+**HYPE is the single most HL-dominant liquid coin** (HL share vs majors 0.241 / vs Binance 0.376), 3–7× BTC/SOL, with
+**ETH last on BOTH the venue axis (0.034) and the edge axis (negative).** Suggestive but N≈1 dominant coin (over-carry
+caveat); no liquid coin exceeds 0.5 HL-share (even HYPE 0.24 — the truly HL-native alts like PURR/SAGA/MINA trade
+<$2M/day). The 1-min oracle-lead-lag proxy (`coin_venue_class.py`) was REFUTED as confounded (mark_px is built from the
+oracle; oracle≠Binance for native coins) — dominance-share is the kept axis.
+
+**NEXT (P0 → then the powered test):**
+1. **P0 — fix the ledger:** port mkcommon's `start_position` seed + burn-in-to-first-true-flat + `~zhash` filter into
+   `individual_persistence.py` / `steelman_features.py` / `maker_taker_split.py`; rebuild the 3541-wallet table; re-run
+   persistence. Until done, the −0.102 / −30.9bp figures are INCONCLUSIVE and must not be quoted as a null.
+2. **P1 — re-run taker-only persistence** on the corrected ledger (is the −0.007 powered null real, or itself a bug
+   artifact?), split by trader type (maker vs directional-taker).
+3. **P1 — venue-bucket edge test:** per-coin CORRECTED taker-only edge across the ~42 liquid coins, regressed on
+   `hl_share_vs_majors` — does copyable edge scale with HL-dominance beyond just HYPE (the powered version of the
+   venue hypothesis)?
+All future tape jobs run SERIALLY, single-process, `POLARS_MAX_THREADS` capped, month-batched (the swarm's concurrent
+tape decompression is what crashed the machine repeatedly — 8.6GB box, transient multi-GB npz/parquet spikes).
+Artifacts: `out/coin_venue_cg.parquet`, `out/coin_venue_class.parquet`, swarm journal under
+`subagents/workflows/wf_55b79046-7db/journal.jsonl`.
+
+### P0 LEDGER FIX RUN — the "winner's curse" is OVERTURNED, not just retracted (2026-07-11, `src/individual_persistence_fixed.py`)
+Rebuilt the persistence table on the restored `data/raw/fills` tape using Hyperliquid's OWN per-fill `closed_pnl`
+(bypasses the buggy avg-cost reconstruction entirely; validated per-wallet: 0xb28c HYPE test = +$128,542 = HL truth,
+old ledger said −$5.36M). Estimand unchanged: realized bps of CLOSED notional `min(|sz|,|start_position|)·px`, split
+TRAIN(ts<Feb1)/TEST(ts>=Mar1), for ALL fills and TAKER-only (crossed). Universe = 14,500 wallets ≥2000 train majors
+fills (vs the old cand2-screened 5,859 — the fix also removes a hidden mlscreen pre-selection); 7,471 have ≥20 closes
+both windows. Crash-safe: POLARS_MAX_THREADS=4, streamed, month-batched.
+
+**CORRECTED HEADLINE (supersedes the −0.102 / −30.9bp "no copyable edge" conclusion — that was largely the bug):**
+- ALL-fills Spearman(tr_vw, te_vw) = **−0.019** (N=7471) — the negative persistence essentially VANISHES to ~zero.
+- **TAKER-only (copyable) Spearman = +0.453** (N=7082) — a LARGE POSITIVE rank-persistence of the copyable subset.
+- train-t≥3 winners OOS = **+17.06bp [−5.95, +40.55]** (n=2512) — was −30.9 [−72.9,+10.3]; now positive point, CI
+  grazes zero. train-t≥4 → +22.5bp, 51% positive. TAKER train-t≥3 winners OOS = +14.2bp [−16.8, +47.6] (n=1635).
+
+**Interpretation (over-null gate satisfied; over-CARRY gate now the live obligation).** Fixing a confirmed bug flipped
+a "negative/null" to a "~zero-to-positive," and the copyable (taker) subset shows strong +0.45 rank-persistence — this
+is real evidence AGAINST the winner's-curse framing. BUT the +0.453 / +17bp must now face the full false-positive
+gauntlet BEFORE being carried as a live copyable edge, the symmetric hazard the gate warns about:
+- **BETA vs SKILL (the load-bearing test):** is the taker persistence skill, or persistent directional BETA (a
+  consistently long-biased wallet looks "good" in both windows if the market rose in both)? Must re-run on
+  market-neutral (index-hedged) taker returns before claiming skill. NOT yet done.
+- **Tail/winsor + clustered CI:** individual te_vw still range to ±3000bp (few-close, small-notional wallets); the
+  Spearman is rank-robust but the +17bp mean and its CI need winsorization + wallet/coin-clustered bootstrap.
+- **Universe change** (7471 vs old 3541, different screen) means it is not a like-for-like swap of the −0.102; the
+  bug-removal is the dominant driver but note the set differs.
+Verdict: **the population is NOT winner's-cursed and the copyable subset persists positively — a genuine positive lead,
+not yet significance-established (CI grazes zero) and not yet beta-cleaned.** Artifacts:
+`out/individual_persistence_fixed.parquet`, `out/indiv_persist_fixed.log`. NEXT: beta-neutral taker persistence +
+winsorized clustered CI, then slice by HL-venue-dominance (the vote/consensus signal shows the same HYPE-strong /
+ETH-negative per-coin pattern → venue-conditioned powered test is the convergence point of all three leads).

@@ -123,18 +123,32 @@ def sign_test(unit_stats: Sequence[float]) -> SignTest:
 # permutation / sign-flip null
 # ---------------------------------------------------------------------------
 def sign_flip_pvalue(x: Sequence[float], stat: Callable[[Array], float] = np.mean,
-                     n_perm: int = 10_000, seed=None):
+                     n_perm: int = 10_000, seed=None, cluster_id: Sequence | None = None):
     """One-sample symmetric-null test (H0: distribution symmetric about 0) via random sign flips.
 
     Good for per-unit signed markout / signed returns. Returns (point, p_two_sided, null_samples).
+
+    `cluster_id`: optional — draw ONE sign per cluster and broadcast it to the cluster's rows.
+    Whole-cluster flips preserve within-cluster dependence under the null; per-row flips on clustered
+    data destroy it and make the null too well-behaved (a test can look calibrated when it isn't).
     """
     x = np.asarray(x, dtype=float)
     obs = float(stat(x))
     rng = _rng(seed)
     # draw signs per-iteration — a dense (n_perm x len(x)) matrix OOMs on large per-observation inputs
     null = np.empty(n_perm)
-    for b in range(n_perm):
-        null[b] = stat(x * rng.choice([-1.0, 1.0], size=x.size))
+    if cluster_id is None:
+        for b in range(n_perm):
+            null[b] = stat(x * rng.choice([-1.0, 1.0], size=x.size))
+    else:
+        cid = np.asarray(cluster_id)
+        if cid.shape[0] != x.size:
+            raise ValueError("cluster_id must align 1:1 with x")
+        _, inv = np.unique(cid, return_inverse=True)
+        n_clusters = int(inv.max()) + 1
+        for b in range(n_perm):
+            s = rng.choice([-1.0, 1.0], size=n_clusters)
+            null[b] = stat(x * s[inv])
     p = (np.sum(np.abs(null) >= abs(obs)) + 1) / (n_perm + 1)
     return obs, float(p), null
 
@@ -184,6 +198,161 @@ def cluster_bootstrap_ci(cluster_id: Sequence, values: Sequence[float],
         boots[b] = statfn(val[rows])
     a = (1 - level) / 2
     return BootCI(point, float(np.quantile(boots, a)), float(np.quantile(boots, 1 - a)), level)
+
+
+def t_ppf(p: float, df: int) -> float:
+    """Student-t quantile via the Cornish–Fisher expansion around the normal quantile (no scipy).
+    Accuracy at p=0.975: ~3e-3 at df=5, <1e-3 for df ≥ 8. The expansion UNDER-shoots badly at very
+    low df (df=1: 9.7 vs true 12.7 — anti-conservative), so df < 4 raises rather than silently
+    narrowing a CI."""
+    if df < 4:
+        raise ValueError(f"t_ppf expansion is unreliable below df=4 (got df={df})")
+    z = inv_norm(p)
+    g1 = (z**3 + z) / 4.0
+    g2 = (5*z**5 + 16*z**3 + 3*z) / 96.0
+    g3 = (3*z**7 + 19*z**5 + 17*z**3 - 15*z) / 384.0
+    return z + g1/df + g2/df**2 + g3/df**3
+
+
+def _cluster_sandwich_var_of_mean(values: Array, cluster_id: Array) -> tuple[float, int]:
+    """CR0 cluster-robust variance of the sample MEAN: V = Σ_c (Σ_{i∈c}(y_i − ȳ))² / n².
+    Returns (variance, n_clusters). With each row its own cluster this is the iid sandwich."""
+    y = np.asarray(values, dtype=float)
+    d = y - y.mean()
+    _, inv = np.unique(np.asarray(cluster_id), return_inverse=True)
+    s = np.bincount(inv, weights=d)
+    return float((s ** 2).sum() / y.size ** 2), int(s.size)
+
+
+@dataclass
+class TwoWayCI:
+    point: float
+    lo: float
+    hi: float
+    level: float
+    se: float                 # the combined two-way SE actually used
+    se_a: float
+    se_b: float
+    se_iid: float
+    df: int                   # min(G_a, G_b) − 1
+    floored: bool             # True if the CGM combination went non-positive and was floored
+
+
+def twoway_cluster_ci(values: Sequence[float], cluster_a: Sequence, cluster_b: Sequence,
+                      level: float = 0.95, method: str = "sandwich",
+                      n_boot: int = 2_000, seed=None) -> TwoWayCI:
+    """Two-way (Cameron–Gelbach–Miller) cluster-robust CI for the MEAN of `values`.
+
+    SE² = SE_a² + SE_b² − SE_iid², critical value from t at min(G_a, G_b) − 1 df. This is the correct
+    interval under simultaneous dependence in BOTH dimensions (e.g. wallet and week); the max of the
+    two one-way CIs is NOT conservative there (probed ~80% coverage at nominal 95% — see
+    audit/copy_cohort_arch/FINDINGS.md S1). Negative-variance guard: if the combination is ≤ 0,
+    SE² is floored at max(SE_a², SE_b²) and `floored` is set.
+
+    method="sandwich" (analytic CR0, default) or "bootstrap" (cluster-bootstrap variance per
+    dimension, same combination).
+    """
+    y = np.asarray(values, dtype=float)
+    point = float(y.mean())
+    if method == "sandwich":
+        va, ga = _cluster_sandwich_var_of_mean(y, np.asarray(cluster_a))
+        vb, gb = _cluster_sandwich_var_of_mean(y, np.asarray(cluster_b))
+        vi, _ = _cluster_sandwich_var_of_mean(y, np.arange(y.size))
+    elif method == "bootstrap":
+        rng = _rng(seed)
+        def _boot_var(cid) -> tuple[float, int]:
+            _, inv = np.unique(np.asarray(cid), return_inverse=True)
+            clusters = np.arange(int(inv.max()) + 1)
+            idx_by = [np.where(inv == c)[0] for c in clusters]
+            boots = np.empty(n_boot)
+            for b in range(n_boot):
+                pick = rng.choice(clusters, size=clusters.size, replace=True)
+                rows = np.concatenate([idx_by[c] for c in pick])
+                boots[b] = y[rows].mean()
+            return float(boots.var(ddof=1)), clusters.size
+        va, ga = _boot_var(cluster_a)
+        vb, gb = _boot_var(cluster_b)
+        vi = float(y.var(ddof=1) / y.size)
+    else:
+        raise ValueError(f"unknown method {method!r} (sandwich|bootstrap)")
+    v2 = va + vb - vi
+    floored = v2 <= 0.0
+    if floored:
+        v2 = max(va, vb)
+    df = max(1, min(ga, gb) - 1)
+    tcrit = t_ppf(1 - (1 - level) / 2, df)
+    se = sqrt(v2)
+    return TwoWayCI(point, point - tcrit * se, point + tcrit * se, level,
+                    se, sqrt(va), sqrt(vb), sqrt(vi), df, floored)
+
+
+# ---------------------------------------------------------------------------
+# empirical-Bayes shrinkage of per-unit means (selection statistic)
+# ---------------------------------------------------------------------------
+@dataclass
+class EBShrink:
+    unit: Array               # distinct unit ids, in np.unique order
+    shrunk: Array             # B_w·ȳ_w + (1−B_w)·ȳ_pool  — the selection score
+    raw_mean: Array           # ȳ_w = episode-equal-weight mean over the unit's rows
+    n_eff: Array              # number of clusters per unit (NOT rows)
+    tstat: Array              # ȳ_w / (σ_w/√n_eff) — the registered fallback ranking
+    tau2: float               # MoM between-unit variance (after flooring)
+    tau2_floored: bool        # True → τ̂²_MoM ≤ floor; ranking should fall back to `tstat`
+    single_cluster: Array     # bool per unit: <2 clusters → B_w=0 (fully shrunk), tstat=nan
+
+
+def eb_shrink(values: Sequence[float], unit_id: Sequence, cluster_id: Sequence,
+              tau2_floor: float = 1e-12) -> EBShrink:
+    """Empirical-Bayes shrunk per-unit (per-wallet) mean, dependence-aware.
+
+    Spec (COPY_COHORT_ARCH §4, estimand frozen post-code-audit): ȳ_w = EQUAL-WEIGHT MEAN OVER THE
+    UNIT'S ROWS (episodes) — identical to the forward-evaluation wallet statistic, so the selector
+    optimizes the quantity the walk-forward measures. Its noise is the CR1-corrected CR0
+    cluster-sandwich variance of that mean, v_w = [G_w/(G_w−1)]·Σ_c(S_c − n_c·ȳ_w)²/n_w² (clusters
+    are where dependence re-enters — rows are not the information unit). B_w = τ²/(τ² + v_w);
+    τ̂² by method-of-moments across units: Var_w(ȳ_w) − mean_w(v_w), floored at `tau2_floor` with a
+    flag — when floored, the registered fallback ranking is `tstat`, not `shrunk` (which degenerates
+    to the pool mean and makes top-K a tie-break artifact). Units with <2 clusters carry no variance
+    information: B_w=0 (score = pool mean), tstat=nan, excluded from ȳ_pool and the MoM. A unit
+    whose cluster residuals are exactly zero gets v_w=0 → B_w≈1 (fully trusted) — a measured-zero
+    corner accepted as-is. NaNs in `values` are refused (they would silently poison every score).
+    """
+    y = np.asarray(values, dtype=float)
+    if np.isnan(y).any():
+        raise ValueError("eb_shrink: values contain NaN — filter before scoring")
+    u = np.asarray(unit_id)
+    units, u_inv = np.unique(u, return_inverse=True)
+    # composite cluster key, integer-native (cluster ids need only be unique WITHIN a unit): pair the
+    # per-unit code with a global cluster code arithmetically. Avoids np.char string ops, which sort
+    # millions of 42-char wallet hashes and dominate runtime (~1h → seconds on real panels). Pass
+    # INTEGER unit/cluster codes for the fast path; string inputs still work but pay the np.unique sort.
+    cl_codes = np.unique(np.asarray(cluster_id), return_inverse=True)[1]
+    pair = u_inv.astype(np.int64) * (int(cl_codes.max()) + 1) + cl_codes
+    _, c_inv = np.unique(pair, return_inverse=True)
+    c_sum = np.bincount(c_inv, weights=y)                   # cluster sums S_c
+    c_cnt = np.bincount(c_inv).astype(float)                # cluster sizes n_c
+    c_unit = np.full(c_sum.size, -1, dtype=int)
+    c_unit[c_inv] = u_inv                                   # every row of a cluster shares the unit
+    n_eff = np.bincount(c_unit, minlength=units.size).astype(float)      # clusters per unit
+    n_rows = np.bincount(u_inv, minlength=units.size).astype(float)      # rows per unit
+    raw = np.bincount(u_inv, weights=y, minlength=units.size) / n_rows   # episode-equal-weight mean
+    resid2 = (c_sum - c_cnt * raw[c_unit]) ** 2
+    ss = np.bincount(c_unit, weights=resid2, minlength=units.size)
+    single = n_eff < 2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        noise = np.where(single, np.nan,
+                         ss / n_rows ** 2 * n_eff / np.maximum(n_eff - 1, 1))   # CR1·CR0 var of ȳ_w
+    ok = ~single
+    tau2_mom = float(raw[ok].var(ddof=1) - np.nanmean(noise[ok])) if ok.sum() > 1 else 0.0
+    floored = tau2_mom <= tau2_floor
+    tau2 = max(tau2_mom, tau2_floor)
+    pool = float(raw[ok].mean()) if ok.any() else float("nan")
+    b = np.where(ok, tau2 / (tau2 + np.where(ok, noise, np.inf)), 0.0)
+    shrunk = b * raw + (1 - b) * pool
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tstat = np.where(ok & (noise > 0), raw / np.sqrt(np.where(ok & (noise > 0), noise, np.nan)),
+                         np.nan)
+    return EBShrink(units, shrunk, raw, n_eff, tstat, tau2, floored, single)
 
 
 def moving_block_bootstrap_ci(series: Sequence[float], statfn: Callable[[Array], float] = np.mean,

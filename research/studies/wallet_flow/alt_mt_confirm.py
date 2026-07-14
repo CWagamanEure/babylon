@@ -11,8 +11,9 @@ Optimized: global wallet int-encoding + per-cohort tilt computed ONCE per fold a
     .venv/bin/python -m research.studies.wallet_flow.alt_mt_confirm
 """
 from __future__ import annotations
-import functools, time
+import functools, time, warnings
 import numpy as np
+warnings.filterwarnings("ignore"); np.seterr(all="ignore")
 from math import comb
 from research.data.db import connect
 from research.studies.xsec_statarb.leadlag import rolling_beta
@@ -63,7 +64,7 @@ def main():
     def trail(H):
         o=np.full(N,np.nan); [o.__setitem__(h,cs[max(0,h-H+1):h+1].sum()) for h in range(N)]; return o
 
-    rows = con.execute("SELECT wb.wallet,wb.h,wb.mth,wb.flow FROM awb wb WHERE wb.flow<>0").fetchnumpy()
+    rows = con.execute(f"SELECT wb.wallet,wb.h,wb.mth,wb.flow FROM awb wb WHERE wb.flow<>0 AND wb.mth>={A.TEST_MONTH}").fetchnumpy()
     rw=np.asarray([str(x) for x in rows["wallet"]],dtype=object); rh=rows["h"].astype(np.int64)
     rmth=rows["mth"].astype(np.int64); rf=rows["flow"].astype(float); hour_of=((rh-hmin)//3600000).astype(int)
     g=(hour_of>=0)&(hour_of<N); rw,rmth,rf,hour_of = rw[g],rmth[g],rf[g],hour_of[g]
@@ -79,27 +80,32 @@ def main():
             AND wb.flow<>0 AND r.fwd_resid IS NOT NULL)
             SELECT wallet, avg(a) al FROM j GROUP BY wallet HAVING count(*)>={A.MIN_TRAIN_BKT}""").fetchnumpy()
         pool=np.asarray([str(x) for x in q["wallet"]],dtype=object); al=q["al"].astype(float)
-        code2pool=np.full(U,-1,np.int64)
+        return pool, al
+
+    def make_tilter(row_mask):
+        """Restrict to rows in row_mask (a month subset) so every tilt scans ~4× fewer rows."""
+        ir=np.nonzero(row_mask)[0]; ho=hour_of[ir]; pr=posr[ir]; nr=negr[ir]; rc=rw_code[ir]
+        hmask=np.zeros(N,bool); hmask[np.unique(ho)]=True
+        def tilt(code2pool, mask):
+            pio=code2pool[rc]; valid=pio>=0; sel=np.zeros(len(pio),bool); sel[valid]=mask[pio[valid]]
+            npos=np.bincount(ho[sel&pr],minlength=N).astype(float)
+            nneg=np.bincount(ho[sel&nr],minlength=N).astype(float)
+            den=npos+nneg; t=np.where(den>0,(npos-nneg)/np.maximum(den,1),np.nan); t[~hmask]=np.nan; return t
+        return tilt
+    def code2pool_of(pool):
+        c2p=np.full(U,-1,np.int64)
         for i,w in enumerate(pool):
             c=wcode.get(w,-1)
-            if c>=0: code2pool[c]=i
-        pio=code2pool[rw_code]                      # per-row pool index (-1 if not in pool), vectorized
-        return pool, al, pio
-
-    def tilt(pio, mask, hmask):
-        valid = pio>=0; sel=np.zeros(len(pio),bool); sel[valid]=mask[pio[valid]]
-        npos=np.bincount(hour_of[sel&posr],minlength=N).astype(float)
-        nneg=np.bincount(hour_of[sel&negr],minlength=N).astype(float)
-        den=npos+nneg; t=np.where(den>0,(npos-nneg)/np.maximum(den,1),np.nan); t[~hmask]=np.nan; return t
+            if c>=0: c2p[c]=i
+        return c2p
 
     print("=== (1) WALK-FORWARD: informed tilt→fwd neutral-alt-index, per month, vs random ===")
     rng=np.random.default_rng(SEED); fwH={H:fwd(H) for H in HS}
     perfold={}
     for m in FOLDS:
-        pool,al,pio=freeze(m); ncoh=int(round(0.20*len(pool))); inf=al>=np.quantile(al,0.80)
-        hmask=np.zeros(N,bool); hmask[np.unique(hour_of[rmth==m])]=True
-        it=tilt(pio,inf,hmask)
-        rts=[tilt(pio,_mkmask(rng,len(pool),ncoh),hmask) for _ in range(KF)]
+        pool,al=freeze(m); c2p=code2pool_of(pool); ncoh=int(round(0.20*len(pool))); inf=al>=np.quantile(al,0.80)
+        tl=make_tilter(rmth==m)
+        it=tl(c2p,inf); rts=[tl(c2p,_mkmask(rng,len(pool),ncoh)) for _ in range(KF)]
         perfold[m]=(it,rts); _log(f"fold {m} tilts done (pool={len(pool):,})")
     for H in HS:
         zs=[]
@@ -111,9 +117,9 @@ def main():
         print(f"    -> H={H}h: {npos}/4 folds z>0, sign-p={ps:.3f}, mean z={zs.mean():+.2f}\n")
 
     print("=== (2) MOMENTUM CONTROL (full TEST, production cohort): tilt→fwd | trailing-H index return ===")
-    pool,al,pio=freeze(A.TEST_MONTH); ncoh=int(round(0.20*len(pool))); inf=al>=np.quantile(al,0.80)
-    hmask=np.zeros(N,bool); hmask[np.unique(hour_of[rmth>=A.TEST_MONTH])]=True
-    it=tilt(pio,inf,hmask); rts=[tilt(pio,_mkmask(rng,len(pool),ncoh),hmask) for _ in range(K)]
+    pool,al=freeze(A.TEST_MONTH); c2p=code2pool_of(pool); ncoh=int(round(0.20*len(pool))); inf=al>=np.quantile(al,0.80)
+    tl=make_tilter(rmth>=A.TEST_MONTH)
+    it=tl(c2p,inf); rts=[tl(c2p,_mkmask(rng,len(pool),ncoh)) for _ in range(K)]
     for H in HS:
         fw=fwH[H]; tr=trail(H); raw=_spear(it,fw); pc=_pcorr(it,fw,tr)
         null=np.array([_pcorr(rt,fw,tr) for rt in rts]); mu,sd=np.nanmean(null),np.nanstd(null)

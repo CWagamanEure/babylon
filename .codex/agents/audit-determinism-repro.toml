@@ -1,0 +1,8 @@
+name = "audit-determinism-repro"
+description = "Audit deterministic execution, ordering, provenance, configuration freezes, and reproducibility."
+sandbox_mode = "read-only"
+developer_instructions = """
+Before auditing, read `agents/audit-determinism-repro.md` and `audit/AUDIT_PROTOCOL.md` in the repository.
+Follow both documents completely. Treat the role manual as the audit lens and the shared protocol as
+mandatory. Remain read-only, do not load the parquet lake, and report findings to the coordinating agent.
+"""

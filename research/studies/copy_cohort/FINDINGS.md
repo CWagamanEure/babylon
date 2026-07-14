@@ -253,7 +253,84 @@ concentration-driven, and not yet significant vs random:**
 
 **Read:** suggestive-positive, UNDERPOWERED — not dead, not confirmed. The book method is the right lens and
 it beats random on the point estimates (Sharpe ~2×, net$ 4–14× the random median), but N=217 can't push
-p<0.05 and the q75 Sharpe p=0.06 is post-hoc. The thinness is the binding constraint. To resolve: hold to
+  p<0.05 and the q75 Sharpe p=0.06 is post-hoc. The thinness is the binding constraint. To resolve: hold to
 the wallet's OWN exit / longer horizon (bigger moves, more $/trade), include ALTS (need alt closed_pnl
 re-pull — where these wallets trade far more), don't drop un-sizeable entries (default clip), and treat q as
 pre-registered not best-of. Artifacts: `book_report.json`, `book_equity.json`, `book.py`.
+
+**2026-07-13 dedicated audit swarm — historical estimate invalid, strategy unresolved:** independent
+leakage, statistics, correctness/data-contract, steelman, and prosecutor passes found that **1.56/1.96 are
+not valid Sharpes**. One of 217 rows has a null 8h markout: masked P&L reductions omit it, but
+`np.bincount` consumes the masked buffer's underlying clip as phantom daily profit. The 216 finite saved
+rows mechanically give active-entry-day Sharpes 0.477/1.323 and full-calendar 8h-exit-day diagnostics
+0.372/1.072; these are still leaked and are NOT corrected strategy estimates. The book also (i) deletes
+entries using their eventual `is_liquidation_close`, (ii) omits `NOT entry_after_close` and
+`entry_lag_s<=90`, (iii) lacks matched endpoint coverage and a capital ledger, and (iv) compares against
+independently redrawn monthly random paths that do not preserve real-wallet persistence. The finite
++$1,411/+$7,638 conditional ledger is real, but +8.7/+23.1bp is non-causal and concentration-driven.
+**Retract the historical estimate as evidence; do not call the strategy null. Direction is unknown until a
+causal rerun.** Full audit: `audit/copy_cohort_top30_book/FINDINGS.md`.
+
+---
+
+## 2026-07-13 — Arm B v2 actual 4h follower book (causal rebuild; top-100)
+
+**Question.** Does the old Arm-B lead survive when we stop averaging wallet markouts and run the actual
+dollar-sized portfolio: top-100 selected on formation realized-PnL bps, causal q50 prior-same-coin clips
+(q75 sensitivity), 4h follower exit, 2.6bp round-trip cost, and a longitudinal matched-random book?
+
+**Pre-run audit found that the old +24.54bp Arm-B result was not a valid causal baseline.** Two finalized
+episode fields leaked beyond the cutoff: forward entries were deleted by their *eventual*
+`is_liquidation_close`, and F4 eligibility read final `hold_minutes` for positions that closed after the
+formation cutoff. Arm-B formation also omitted its registered F0 freshness predicates. Arm B v2 fixes all
+three: liquidation is usable in formation only when `close_ts < cutoff` and never filters a forward entry;
+hold duration is censored as-of cutoff; F0 applies. The old +24.54 [1.87,36.60] is therefore **retracted as
+a causal result** (a lead that motivated this rebuild, not evidence carried into the verdict).
+
+**Actual book, net of 2.6bp (3,337 evaluable positions, 137 wallets, 23 exit weeks; 99.79% endpoint
+coverage):**
+
+- **q50 primary:** +1.97bp absolute, two-way wallet×week CI **[−6.00,+9.93]**; +$2,080 on $10.58M
+  evaluable turnover; corrected full-calendar daily Sharpe **0.49**; peak concurrent gross $138k.
+- **q75 sensitivity:** +1.84bp, CI **[−6.90,+10.58]**; +$4,133 on $22.47M; Sharpe **0.45**. More clip
+  capital increases dollars but slightly dilutes return, so q75 is not a confirmation.
+- The point is not one-trade fragile: q50 top trade = 1.46% and top wallet = 12.28% of positive PnL;
+  leave-one-wallet net return stays **+0.39 to +3.26bp** and leave-one-week **+0.32 to +3.72bp**.
+
+**Matched longitudinal book (1,000 whole-trajectory paths; formation-feature TV≤5%; ranks are
+descriptive, not finite-sample p-values):**
+
+- q50 random median −3.29bp → observed enrichment **+5.26bp**, descriptive band **[−6.33,+16.74]**,
+  rank 0.180. q75 enrichment +5.32bp, band [−6.66,+16.88], rank 0.181.
+- q50 fold enrichment: +8.43, +7.09, −8.11, +15.12, −0.27bp → **3/5** beat the matched median.
+  Wallet/week breadth ranks are 0.501/0.471 (chance-like): the lean is payoff magnitude, not breadth.
+- Sampler construction passed: 1,000 unique economic paths, ~22% acceptance, return/tail ESS 797/805,
+  chain-mean spread 0.124 null SD, median real-wallet overlap 2%/fold. Coverage real 99.79% vs random
+  99.90%; the band is not manufactured by endpoint missingness. Primary bp normalizes real's higher
+  turnover ($10.60M vs random $8.12M); net-dollar ranks remain descriptive.
+
+**Point estimate + CI + MDE + cross-unit check (the always-pending null gate):** enrichment +5.26bp;
+band [−6.33,+16.74]; empirical 80%-power MDE **14.43bp > 5bp care-about**; fold breadth 3/5 and
+wallet/week breadth ranks ≈chance. The apparent “+5bp injection rank 0.046” adds 5bp *on top of the already
+observed +5.26bp lean* and is not standalone 5bp power; do not use it against the MDE.
+
+**Mandatory dual adversarial framing:**
+
+- **Steelman:** positive absolute and matched point estimates survive q50/q75, every leave-one-wallet cut,
+  every q50 leave-one-week cut, 3/5 folds, causal v2, near-complete coverage, and a conservatively
+  constructed longitudinal random book. Best positive framing: credible underpowered enrichment lead.
+- **Prosecutor (binding under the explicit over-carry rule):** this target was chosen after a repo-wide
+  hunt on reused months; neither absolute nor matched interval resolves direction; MDE is ~3× the target;
+  breadth is chance; q75 is the same trades; no error-controlled positive survives the whole arc.
+
+**VERDICT: UNRESOLVED POST-HOC RESIDUAL, DIRECTION UNKNOWN — not a live edge, not a null, not deployable.**
+The positive point estimate (+5.26bp enrichment; +1.97bp absolute book) is recorded and must not be buried,
+but the available reused data cannot determine whether it is real. A null/negative is not earned because
+the intervals admit worthwhile positives and MDE≫5. A positive is not earned because the controlled layer
+does not resolve direction. Freeze v2/q50/4h/costs and adjudicate only on genuinely new OOS data; to reach
+MDE≤5 under sqrt-N scaling needs roughly 8× the independent information.
+
+**Artifacts.** `ARM_B_BOOK_ARCH.md`, `arm_b_book.py`,
+`data/derived/copy_cohort/{arm_b_book_report.json,arm_b_book_equity.json}`,
+`audit/copy_cohort_arm_b_book/{SCOPE,FINDINGS}.md`. Architecture swarm, build audit, steelman, prosecutor,
+and construction-conservatism pass completed this session.

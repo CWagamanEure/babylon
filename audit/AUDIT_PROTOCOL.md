@@ -1,6 +1,6 @@
 # AUDIT PROTOCOL — shared rules for every audit subagent (read this FIRST)
 
-Reusable, target-agnostic protocol for the `.claude/agents/audit-*` personas. A specific audit run may
+Reusable, target-agnostic protocol for the `.claude/agents/audit-*` and `agents/audit-*` personas. A specific audit run may
 add a scope note (like `audit/00_GROUND_RULES.md` did for the copy-trade audit), but these rules always
 hold. You are one of several independent adversarial auditors. Your job: **find the place where a
 believable-but-wrong result, a silent bias, or an engineering bug corrupts a number, a decision, or an
@@ -21,7 +21,7 @@ episodes_build`). A prior audit OOM-crashed the box by eager-loading monthly par
   a failure scenario on paper. Run a probe only when a claim genuinely can't be settled by reading.
 
 ## 2. Verify before you report (two-sided discipline)
-This repo's `CLAUDE.md` gate cuts both ways — apply it to your OWN findings:
+This repo's over-nulling gate in `CLAUDE.md` and `AGENTS.md` cuts both ways — apply it to your OWN findings:
 - **Don't over-claim.** Before reporting a bug, construct the concrete input→wrong-output path and
   confirm the code actually allows it (no upstream guard catches it). If you couldn't confirm, mark
   confidence LOW and state exactly what probe/data would settle it. Speculation dressed as fact is noise.

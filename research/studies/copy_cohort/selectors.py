@@ -71,15 +71,18 @@ def _arm_a_sql(lo_ms: int | None = None, hi_ms: int | None = None,
     range implied). Forward: pass [lo, hi) open_ts range and censor_ms=None (no window censor).
     Assumes a `mu` temp table registered at the appropriate cutoff."""
     conds = [f"b.open_ts >= {lo_ms if lo_ms is not None else START_MS}",
-             "b.crossed_open", "NOT b.opener_flagged", "NOT b.is_liquidation_close",
+             "b.crossed_open", "NOT b.opener_flagged",
              "NOT b.entry_after_close", f"b.entry_lag_s <= {ENTRY_LAG_MAX_S}",
              f"b.raw_markout_{H} IS NOT NULL"]
     if hi_ms is not None:
         conds.append(f"b.open_ts < {hi_ms}")
     if censor_ms is not None:
         conds.append(f"b.entry_bar_ts + {H_MS} < {censor_ms}")
+        # A liquidation close is usable only once known at the cutoff. A bare
+        # `NOT is_liquidation_close` peeks through episodes liquidated after C.
+        conds.append(f"(NOT b.is_liquidation_close OR b.close_ts IS NULL OR b.close_ts >= {censor_ms})")
     return f"""
-      SELECT b.wallet, b.coin, b.open_ts, b.entry_bar_ts, b.dir_sign,
+      SELECT b.wallet, b.coin, b.open_ts, b.close_ts, b.entry_bar_ts, b.dir_sign,
              b.iso_week_open AS week_open,
              b.initial_notional_usd, b.hold_minutes,
              b.raw_markout_{H} - b.dir_sign * mu.mu_{H} AS y
@@ -100,19 +103,25 @@ class FoldPanel:
     score_b_meta: dict
 
 
-def build_formation(con, cutoff_month: int) -> FoldPanel:
-    """Eligibility pool + both arms' scores, all formation-only at cutoff = end of cutoff_month."""
+def build_formation(con, cutoff_month: int, arm_b_apply_f0: bool = True) -> FoldPanel:
+    """Eligibility pool + both arms' scores, all formation-only at cutoff = end of cutoff_month.
+
+    `arm_b_apply_f0=True` is the corrected Arm-B v2 config (2026-07-13). The original Arm-B SQL
+    accidentally omitted the registered entry-freshness predicates; pass False only to reproduce
+    that legacy as-implemented cohort as a labeled sensitivity.
+    """
     c = as_of_cutoff_ms(cutoff_month)
     mu_fold.register_mu(con, cutoff_ms=c, horizons=(H,), start_ms=START_MS)
     con.execute(f"CREATE OR REPLACE TEMP TABLE fa AS {_arm_a_sql(censor_ms=c)}")
 
     # wallet-level features + F1–F6/F8 from the Arm-A panel; F7 from the unfiltered episode lake
-    feats = con.execute("""
+    feats = con.execute(f"""
       SELECT wallet,
              count(*)                                   AS n_ep,
              count(DISTINCT open_ts // 86400000)        AS n_days,
              count(DISTINCT week_open)                  AS n_weeks,
-             coalesce(median(hold_minutes), 0.0)        AS med_hold,
+             coalesce(median((least(coalesce(close_ts, {c}), {c}) - open_ts) / 60000.0), 0.0)
+                                                            AS med_hold,
              coalesce(median(initial_notional_usd), 0.0) AS med_notional,
              max(initial_notional_usd) / sum(initial_notional_usd) AS max_ep_share,
              avg(CASE WHEN dir_sign > 0 THEN 1.0 ELSE 0.0 END)     AS long_share,
@@ -121,7 +130,9 @@ def build_formation(con, cutoff_month: int) -> FoldPanel:
       GROUP BY wallet""").fetchnumpy()
     flags = con.execute(f"""
       SELECT wallet,
-             avg(CASE WHEN opener_flagged OR is_liquidation_close THEN 1.0 ELSE 0.0 END) AS flag_share
+             avg(CASE WHEN opener_flagged OR
+                           (close_ts IS NOT NULL AND close_ts < {c} AND is_liquidation_close)
+                      THEN 1.0 ELSE 0.0 END) AS flag_share
       FROM read_parquet('{BASE_GLOB}', hive_partitioning=false)
       WHERE open_ts >= {START_MS} AND open_ts < {c}
       GROUP BY wallet""").fetchnumpy()
@@ -150,6 +161,8 @@ def build_formation(con, cutoff_month: int) -> FoldPanel:
     score_a, meta_a = _score_arm(a["y"], a["w_code"], a["c_code"], a["wallet"])
 
     # Arm B: pool-wallet closed episodes, winsorized (coin,week_close)-demeaned realized bps
+    arm_b_f0 = (f"AND NOT b.entry_after_close AND b.entry_lag_s <= {ENTRY_LAG_MAX_S}"
+                if arm_b_apply_f0 else "")
     b = con.execute(f"""
       WITH cl AS (
         SELECT b.wallet, b.coin,
@@ -160,6 +173,7 @@ def build_formation(con, cutoff_month: int) -> FoldPanel:
         JOIN poolt p ON b.wallet = p.wallet
         WHERE b.open_ts >= {START_MS} AND b.close_ts IS NOT NULL AND b.close_ts < {c}
           AND b.crossed_open AND NOT b.opener_flagged AND NOT b.is_liquidation_close
+          {arm_b_f0}
           AND b.initial_notional_usd + b.total_added_notional_usd > 0
       ),
       wz AS (SELECT quantile_cont(bps, {WINSOR[0]}) AS q_lo,
@@ -174,6 +188,8 @@ def build_formation(con, cutoff_month: int) -> FoldPanel:
         score_b, meta_b = _score_arm(b["bps_dm"], b["w_code"], b["c_code"], b["wallet"])
     else:
         score_b, meta_b = {}, {"n_scored": 0}
+    meta_b["arm_b_apply_f0"] = bool(arm_b_apply_f0)
+    meta_b["config_epoch"] = "arm_b_v2_f0_2026-07-13" if arm_b_apply_f0 else "legacy_no_f0"
 
     features = {}
     act_edges = np.quantile(feats["n_ep"][elig], [0.2, 0.4, 0.6, 0.8])

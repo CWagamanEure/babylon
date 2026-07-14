@@ -1,0 +1,16 @@
+[Unit]
+Description=Babylon xsec cross-sectional alt-selection paper follower (Result 10)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/bablyon
+ExecStart=/root/bablyon/.venv/bin/python -m babylon.follow.xsec_book_main --state-dir data/follow/xsec_book_live
+Restart=always
+RestartSec=60
+StandardOutput=append:/root/bablyon/data/follow/xsec_book_live/dryrun.log
+StandardError=append:/root/bablyon/data/follow/xsec_book_live/dryrun.log
+
+[Install]
+WantedBy=multi-user.target
