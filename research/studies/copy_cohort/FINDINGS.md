@@ -334,3 +334,68 @@ MDE≤5 under sqrt-N scaling needs roughly 8× the independent information.
 `data/derived/copy_cohort/{arm_b_book_report.json,arm_b_book_equity.json}`,
 `audit/copy_cohort_arm_b_book/{SCOPE,FINDINGS}.md`. Architecture swarm, build audit, steelman, prosecutor,
 and construction-conservatism pass completed this session.
+
+---
+
+## 2026-07-14 — CAPDAY BOOK: clean causal top-30/8h book + 24h/48h/own-exit levers → NO copyable edge
+
+**Question.** The user's exact spec: rolling **top-30 by capped-PnL-per-active-day** (CAP=$100k, monthly roll,
+majors), copy the cohort's forward **opening-taker** entries, dollar-sized by leakage-safe prior-notional
+q50 clips, exit at **8h** — is the edge real? Plus the two levers the ledger kept flagging: longer horizons
+(24h/48h) and the wallets' **own exit**. Motivated by the retracted `book.py` headline (+8.7/+23.1 bp,
+Sharpe 1.56/1.96), which the 2026-07-13 audit found INVALID (F1 masked-array Sharpe fabrication, F2
+liquidation lookahead, F3 non-executable entries — all three re-confirmed by reading `book.py` this session).
+
+**Method.** New leakage-clean causal book `capday_book.py`, porting `arm_b_book.py`'s audited accounting onto
+the capday selector. Full pre-registered protocol: arch doc (`CAPDAY_BOOK_ARCH.md` v1.1) → 4-agent
+architecture audit (A1–A17 folded) → own-exit **markout sidecar** (`markout.py` close-mode: forward-ASOF at
+`close_ts`, ≤90s, `close_bar_ts≥entry_bar_ts` guard, 1:1 key tripwire; `episodes_markout_close`, 32M rows) →
+base v2 (+24h/48h, provenance-guarded `open_base`) → build → 4-agent **code audit** (1 HIGH: balancing-
+feature cutoff off by one month leaked the test month into the MATCHED-RANDOM benchmark only — FIXED + A9
+assert + re-run; 7 MED fixed) → run 4 horizons × {q50,q75} over **8 walk-forward folds** (202511–202606) →
+separate **steelman + prosecutor** passes. Cohort estimate/CI were unaffected by the C1 leak; only the
+descriptive random benchmark changed (8h rank 0.088→0.186, folds 7/8→5/8 — the leak was conservative).
+
+**Result (PRIMARY = 8h q50; 24h/48h/own-exit are pre-registered SECONDARY LEADS, never headline).**
+The three views of the SAME 8h trade set disagree in sign — and only the non-copyable one is positive:
+- **dollar-weighted net +16.66 bp**, two-way wallet×week CI **[−10.2, +43.5] — includes 0**; win rate 0.49;
+  top wallet = **26%** of positive PnL; daily Sharpe 1.17; leave-one-wallet min +7.8, leave-one-week min +8.5.
+- **per-episode −3.07 bp**; **WALLET-EQUAL (the copyable per-decision co-primary) −7.23 bp**, CI [−55.8, +41.3]
+  (n=46 wallets) — negative point, wide CI.
+- vs matched-random: rank 0.186, 5/8 folds — **but `random_band_interpretable=False`** (return-ESS 67 ≪ 400
+  gate), so the ranks/folds are DESCRIPTIVE-only, not admissible. MDE **53 bp ≫ 5 bp** care-about.
+- Secondary leads under a CONSISTENT weighting are worse: wallet-equal −7.2 / −34.1 / −83.5 bp at 8h/24h/48h
+  (monotone decay); dollar-weighted own-exit −0.6 bp. Own-exit's +112 bp wallet-equal is a handful of
+  multi-month buy-and-holds (evaluable hold p90 ≈ **17 days**, 9.5% censored, 20 open at data end, true bound
+  **[−315, +244]**) — not a copyable taker signal on any executable horizon.
+
+**VERDICT — over-null AND over-carry gates applied symmetrically: UNRESOLVED / method-scoped NO-SUPPORT —
+NOT a live positive, NOT a deployable edge, and NOT a reproduction of the retracted +8.7/+23.1 bp headline.**
+- The **over-carry rule forces demotion** of the +16.7 bp dollar positive: it is size-weighted only, disagrees
+  in sign with BOTH per-decision estimators, its CI includes 0, it fails to clear an (uninterpretable)
+  matched-random, and it is concentration-carried (win 0.49, top wallet 26%, two small-N folds 202603 n=12
+  / 202604 n=6 carry it). Every over-carry demotion criterion is met.
+- It does **not** earn a hard powered NEGATIVE: MDE 53 ≫ 5 (blind at the deployable scale), and the
+  load-bearing wallet-equal is negative in POINT (−7.2) but WIDE (CI admits +41) — a negative-leaning
+  *underpowered* estimate, not a tight null. So the honest terminus is "no copyable edge demonstrated at
+  achievable power," not "proven zero."
+- **Direct answer:** the selector picks genuinely profitable wallets, but a fixed-8h (or 24/48h, or own-exit)
+  taker copy of their opening majors positions does NOT inherit that as a per-decision copyable edge. The
+  only positive is a non-copyable dollar/concentration artifact whose CI includes zero. Consistent with the
+  ENTIRE prior lineage (Arm A markout null, Arm C 8h-markout "data can't resolve," Arm B v2 unresolved
+  residual): any copy-cohort signal is a realized-PnL/hold-horizon phenomenon, not a copyable fixed-horizon
+  markout one — and the majors data (46 cohort wallets, ~164 bp/trade noise) cannot resolve a single-digit-bp
+  per-decision edge. Same power wall as the rest of the line.
+
+**What would still resolve it (honest levers; the anti-ratchet obligation is a POWERED design, not a re-run):**
+(1) forward paper-deploy the frozen 8h q50 book from 2026-07 and accumulate wallet-weeks (point est +16.7,
+missing only N); (2) pool for N across more coins/wallets + market-neutralize the markout to push MDE from 53
+toward the ~17 bp signal; (3) an uncensored own-horizon design (fixed max-hold = wallet median, not the
+double-truncated own-exit) to test whether the edge lives at the wallets' natural horizon; (4) alts, where
+these wallets are more active (needs alt `closed_pnl` re-pull). None run.
+
+**Artifacts.** `CAPDAY_BOOK_ARCH.md` (v1.1), `capday_book.py`, `markout.py` (close-mode sidecar), `base.py`
+(v2 + `open_base`/`open_close_sidecar`), `data/derived/copy_cohort/{capday_book_report.json,
+capday_book_equity.json}`, `data/derived/episodes_markout_close/`, `audit/copy_cohort_capday_book/{SCOPE,
+FINDINGS}.md` (architecture + code audit + resolutions). Steelman + prosecutor passes (separate agents)
+recorded this session.
