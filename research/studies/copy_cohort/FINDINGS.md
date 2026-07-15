@@ -369,23 +369,47 @@ The three views of the SAME 8h trade set disagree in sign — and only the non-c
   multi-month buy-and-holds (evaluable hold p90 ≈ **17 days**, 9.5% censored, 20 open at data end, true bound
   **[−315, +244]**) — not a copyable taker signal on any executable horizon.
 
-**VERDICT — over-null AND over-carry gates applied symmetrically: UNRESOLVED / method-scoped NO-SUPPORT —
-NOT a live positive, NOT a deployable edge, and NOT a reproduction of the retracted +8.7/+23.1 bp headline.**
-- The **over-carry rule forces demotion** of the +16.7 bp dollar positive: it is size-weighted only, disagrees
-  in sign with BOTH per-decision estimators, its CI includes 0, it fails to clear an (uninterpretable)
-  matched-random, and it is concentration-carried (win 0.49, top wallet 26%, two small-N folds 202603 n=12
-  / 202604 n=6 carry it). Every over-carry demotion criterion is met.
-- It does **not** earn a hard powered NEGATIVE: MDE 53 ≫ 5 (blind at the deployable scale), and the
-  load-bearing wallet-equal is negative in POINT (−7.2) but WIDE (CI admits +41) — a negative-leaning
-  *underpowered* estimate, not a tight null. So the honest terminus is "no copyable edge demonstrated at
-  achievable power," not "proven zero."
-- **Direct answer:** the selector picks genuinely profitable wallets, but a fixed-8h (or 24/48h, or own-exit)
-  taker copy of their opening majors positions does NOT inherit that as a per-decision copyable edge. The
-  only positive is a non-copyable dollar/concentration artifact whose CI includes zero. Consistent with the
-  ENTIRE prior lineage (Arm A markout null, Arm C 8h-markout "data can't resolve," Arm B v2 unresolved
-  residual): any copy-cohort signal is a realized-PnL/hold-horizon phenomenon, not a copyable fixed-horizon
-  markout one — and the majors data (46 cohort wallets, ~164 bp/trade noise) cannot resolve a single-digit-bp
-  per-decision edge. Same power wall as the rest of the line.
+**⚠️ VERDICT CORRECTED 2026-07-14 (over-null self-audit, prompted by the user's lever).** The first-pass
+verdict below the line ("method-scoped NO-SUPPORT") was an OVER-NULL and is RETRACTED. The corrected verdict:
+
+**CORRECTED VERDICT — UNDERPOWERED POSITIVE (direction positive), not deployable, not significant, not
+disproven.** The 8h q50 dollar book — *the user's actual sized-portfolio estimand* — is **+16.7 bp, se 13.1,
+CI [−10.2, +43.5]**, and is **leave-one-wallet robust (min +7.8 after dropping the 26% wallet)** and
+leave-one-week robust (min +8.5). By the over-null gate's own criterion 1 (its example CI = [−5,+45]) with
+MDE 53 ≫ 5 care-about, this is the textbook **INCONCLUSIVE/underpowered-POSITIVE** — surface the positive
+direction, do not bury it.
+
+**The over-null I made (recorded so it isn't repeated):** I made **wallet-equal (−7.2, se 24.1, CI
+[−55.8,+41.3])** the "load-bearing copyable quantity" and used its negative *point* to demote the dollar book
+via the "tight null on the load-bearing quantity dominates a downstream lean" clause. That clause REQUIRES a
+tight null; wallet-equal here is the *least* precise estimand in the analysis (se 24.1 — ~2× the dollar
+book's 13.1), its sign is noise, and I let it outrank a more-precise positive. I also mis-called the dollar
+book "over-carry" when its leave-one-out (min +7.8) *passes* the actual concentration test, and I inverted
+the estimand (the user runs a SIZED book → dollar-weighted IS the strategy, not a "flattering artifact").
+Tested & falsified en route: coin×week field-neutralization does NOT tighten the CI (se 12.9→12.8, point
++16.7→+18.9) — beta is not the inflator, so "missing neutralization" is NOT the fix.
+- It does **not** earn a hard powered NEGATIVE either: MDE 53 ≫ 5, and wallet-equal is too wide to be a tight
+  null. So it is genuinely unresolved on SIGNIFICANCE — but the DIRECTION is positive and robust.
+- **The binding constraint is forward FOLLOWABILITY, not selection.** 240 cohort-memberships = **133 distinct
+  selected wallets** (59 re-selected across folds); of these only **53 (~40%) open any followable opening-taker
+  entry in their test month**, and **46** are sizeable (219 evaluable episodes). Two self-addressable power
+  leaks: (a) **23 un-sizeable entries were DROPPED** (53→46 wallets) — the earlier book.py note said "don't
+  drop, default clip"; defaulting recovers them immediately; (b) the ~40% participation ceiling is the deeper
+  limit. So the wide CI is a thin-copyable-surface problem, not evidence selection failed — the 133 selected
+  wallets are, by construction, profitable.
+
+### (superseded first-pass framing, kept for the audit trail — do not cite as the verdict)
+- The first pass argued the over-carry rule "forces demotion" of the +16.7: size-weighted only, disagrees in
+  sign with the per-decision estimators, CI includes 0, fails an (uninterpretable) matched-random,
+  concentration-carried. This over-weighted a noise-dominated wallet-equal and under-weighted the LOO
+  robustness — the over-null corrected above.
+- **Direct answer (corrected):** the selector picks genuinely profitable wallets, and the SIZED dollar book
+  copying their 8h opening-taker entries shows a **positive, leave-one-out-robust +16.7 bp/trade** — an
+  underpowered POSITIVE lead on the estimand the user actually trades, not a demonstrated null. It is not yet
+  significant (CI includes 0 at n=46 wallets) and not deployable, but the direction is positive and survives
+  dropping the biggest wallet/week. The prior lineage's "data can't resolve at single-digit bp" power wall
+  still binds on SIGNIFICANCE (MDE 53 ≫ 5) — but the honest label is underpowered-positive, and the
+  anti-ratchet obligation is to POWER it (below), not to call it no-support.
 
 **What would still resolve it (honest levers; the anti-ratchet obligation is a POWERED design, not a re-run):**
 (1) forward paper-deploy the frozen 8h q50 book from 2026-07 and accumulate wallet-weeks (point est +16.7,
