@@ -311,7 +311,7 @@ def _pull_episodes(con, wallets: list[str]) -> dict:
     con.unregister("u_src")
     d = con.execute(f"""
       SELECT b.wallet, b.coin, b.entry_bar_ts AS ts, b.open_ts, b.close_ts, b.hold_minutes,
-             b.initial_notional_usd AS notl,
+             b.initial_notional_usd AS notl, b.dir_sign,
              b.raw_markout_8h  AS mk_8h,
              b.raw_markout_24h AS mk_24h,
              b.raw_markout_48h AS mk_48h,

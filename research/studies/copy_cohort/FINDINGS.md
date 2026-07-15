@@ -423,3 +423,104 @@ these wallets are more active (needs alt `closed_pnl` re-pull). None run.
 capday_book_equity.json}`, `data/derived/episodes_markout_close/`, `audit/copy_cohort_capday_book/{SCOPE,
 FINDINGS}.md` (architecture + code audit + resolutions). Steelman + prosecutor passes (separate agents)
 recorded this session.
+
+## 2026-07-14 — CAPDAY BOOK, Steps 1–3 (user's research program: why does the CI include 0?)
+
+The user directed a structured program to resolve whether the wide CI is a selection problem, a fragility
+(tail) problem, or a sizing problem, with an explicit anti-overfit stance and equal-standing over-null/
+over-carry gates. Four instruments built and run on the SAME leakage-clean 8h q50 book (`capday_book._book`).
+
+**Step 1 — contribution diagnostics (`capday_diag.py`).** The CI-includes-0 is CONCENTRATED, not broad:
+median wallet +3.1bp, worst-5-of-46 wallets = 72% of gross loss, remove-worst-5 lifts +16.7→+42.6bp; blowups
+IDIOSYNCRATIC (entry crash-corr to field −0.016). Necessary condition for a fragility filter met; sufficiency
+(ex-ante predictability) deferred to Step 3.
+
+**Step 2 — shrunk-8h-markout selection (`capday_markout_select.py`).** The user's highest-suspicion lever
+(align selection with the 8h target, EB-shrink). FALSIFIED as a lift: LCB(λ=1) book −3.9bp CI[−14.8,+7.1],
+pure shrunk-mean(λ=0) −1.4bp CI[−18.1,+15.3]; both pick a DISJOINT high-frequency population (32–50 entries/
+wallet vs capped-PnL's ~5; cohort overlap 0/30 every fold) and both are near-zero/negative with tight CIs
+(n=3.9k–6k). Powered method-scoped NEGATIVE for shrunk-8h-markout selection on majors@8h — the copyable edge
+lives in the low-frequency large-position cohort, orthogonal to markout ranking.
+
+**Step 3a — blowup anatomy, unit = wallet-fold (`capday_anatomy.py`) + conditioning controls
+(`capday_sizecurve.py` Part 1).** First-pass verdict ONE_TRADE_TAIL was OVERSTATED and is withdrawn after the
+user's conditioning correction: (a) blowup recurrence is UNMEASURABLE (5 of 6 blowup wallets appear in only
+one fold; IID-expected recur≥2 = 0.03) — zero recurrence is not evidence of non-recurrence; (b) worst-entry-
+share ≥70% is mechanically forced at n≤2 and uninformative; (c) BUT conditioned on n=2, blowups over-index on
+"worst entry = the larger clip" (1.0 vs 0.42 for ordinary n=2 folds) — a real, if tiny-N, size association.
+Winner mirror: top-3 wallet-folds = 48% of positive PnL (the +16.7 is concentration-carried, same tail that
+makes the losses).
+
+**Step 3b/c — containment + SIZE-RESPONSE curve + frozen α-sizing curve (`capday_caps.py`,
+`capday_sizecurve.py`).** No sizing transform robustly improves the risk-adjusted book:
+- Equalizing DESTROYS the edge (equal-per-entry +16.7→−3.1, equal-per-walletfold −10.6) → size carries real
+  information; full equalization throws away the strategy's only edge.
+- SIZE-RESPONSE (within-wallet clip percentile → OOS net bp, wallet-clustered) is NON-MONOTONE with every
+  bucket CI including 0; the LARGEST-clip bucket (p90–100) is the mildly POSITIVE one (+16.7 wal). So "extreme
+  relative size is harmful" is NOT supported — the big trades carry the edge, not the damage.
+- α-curve (copy = notlᵅ·median¹⁻ᵅ): a mean-vs-robustness tradeoff, not a free win. α=1 (copy actual size)
+  +31.7bp CI[−5.7,+69.2] but FRAGILE (2/8 folds+, top-3 winners 70%, worst-fold −$2079); α=0–0.25 (compress
+  to typical size) more fold-robust (5/8, best worst-fold at α=0.25) at LOWER mean (+14–17). Caps on ACTUAL
+  size HURT (leave-top-3-winners-out −36/−49bp) — opposite sign to the earlier median-base pool-cap that
+  helped, i.e. the cap "win" is parameterization-dependent noise, not a robust size law.
+
+**Verdict (both gates).** Wallet-level prediction (Steps 2, 3a) AND size-based containment (Step 3c) both fail
+to produce a robust lift. The +16.7bp baseline is a genuine but UNDERPOWERED positive; the binding constraint
+is POWER (46 wallets, 8 folds — every CI straddles 0), not a missing selection or sizing rule. This is the
+anti-ratchet terminus for the majors line: the powered designs were built and none clears. Levers that add
+real N (not more search on these 46 wallets): forward paper-accumulation of wallet-weeks; pooling across coins
+via alts (needs alt `closed_pnl`). Artifacts: `capday_{diag,markout_select,anatomy,caps,sizecurve,fragility}.py`,
+`data/derived/copy_cohort/capday_{diag,markout_select,anatomy,caps,sizecurve}_report.json`.
+
+## 2026-07-14 — Steps 3d–3e: sizing thread CLOSED + BETWEEN-WALLET SCALE = first positive selection lead
+
+**Step 3d — definitive within-wallet relative-size test (`capday_sizetest.py`).** Equal wallet budget, r =
+entry_notl/strict-prior-median, g(r)=min(r^α,3), exposure-normalized, PAIRED wallet-cluster bootstrap, walk-
+forward α. Result: relative clip size is NOT a usable sizing signal at this N — no α beats equal-budget paired
+(α=1 Δ −7.2bp [−38,+34], P(Δ>0)=0.32), and the WF-selected α is WORSE (−14.3bp). Also: under equal budget even
+α=0 is −3.1bp → the headline +16.7 was the median-NOTIONAL (capacity) weighting, not within-wallet conviction.
+Per the user's pre-registered criterion (WF-selected rule must fail), this EARNS the method-scoped negative for
+the SIZING lever. Base per-decision edge is flat-to-negative & underpowered on equal exposure (not a hard zero).
+
+**Consensus feasibility on majors (probe).** Synchronized-entry consensus is majors-infeasible: of 243 in-test
+cohort opening-taker entries (53 wallets, 4 coins), ≥2 distinct wallets agree (same coin/dir) for only 7%/12%
+of entries at ±1h/±4h, ≥3 essentially never; 24 non-overlapping 24h consensus clusters total. The cohort is too
+sparse on majors for a breadth/consensus signal → needs alts (density) OR a position-STATE definition (below).
+
+**Step 3e — BETWEEN-wallet SCALE test (`capday_betascale.py`). FIRST POSITIVE SELECTION LEAD.** The +16.7 dying
+under equal budget is NOT proof wealth was accidental — typical wallet scale may IDENTIFY the informed/institution-
+like wallets. Test: fixed formation weight w_i ∝ scale_i^β (scale = wallet-fold strict-prior median opening
+notional), EQUAL within-wallet, exposure-normalized, β∈{0,.25,.5,1}, paired + WF. Result (opposite to α):
+scale-tilt HELPS — paired Δ vs β=0: β=.25 +5.9 [−10,+22] P(Δ>0)=0.75, β=.5 +8.5 [−20,+39] P=0.71; WF-selected β
+ADAPTIVE +19.5bp vs baseline −15.9 → Δ +35.4bp (WINS, mirror of α's −14.3). **Scale QUARTILES** (equal-weight/
+wallet-fold, wallet-clustered): Q1 $26–769 −23.8 / Q2 $848–2846 −53.3 / Q3 $3k–9k +3.0 / Q4 $9k–100k **+32.6** —
+only the large-scale quartile is positive, small-scale negative. Direction consistent across 3 independent views
+(paired Δ, WF selection, quartile monotone large>small). **VERDICT: underpowered POSITIVE lead for a BETWEEN-
+wallet scale selection axis** (all CIs still include 0; n=219, 14 wf/quartile; β reverts at 1.0; WF 7 folds) —
+suggestive not established. Reframes the study: the tradable refinement is SELECT LARGER-SCALE WALLETS, not copy
+their sizes (α, rejected) and not predict fragile wallets (3a, no signal). Next (user order): active-POSITION-
+STATE consensus (shared view ≠ synchronized entry), MAE/MFE + source-wallet exit, then alts. Artifacts:
+capday_{sizetest,betascale}.py + _report.json.
+
+## 2026-07-14 — Step 3f: FROZEN entry rule = scale-only (scale × consensus interaction, constrained)
+
+Per the user (freeze WHO/WHEN to copy before exits or alts; formation-known vars only, no tuning). 2×2 =
+wallet scale (LARGE=top-half prior-median notional within fold) × position-state consensus (≥1 other selected
+wallet already HOLDING same coin+dir at entry). Sizing wallet-equal, exit 8h, BTC/ETH/SOL core vs HYPE separate.
+
+RESULT (CORE, wallet-equal 8h net bp): large+consensus −121 (n=1/wf1 — DEGENERATE) | large+solo +52.6 (n24/wf4)
+| small+consensus +22.8 (n86/wf22) | small+solo −17.6 (n61/wf28). **The primary Δ (does consensus help LARGE
+wallets) is NOT ESTIMABLE — large+consensus n=1**, because LARGE-scale wallets are position INITIATORS not
+confirmers (they enter solo/first, +52.6, and essentially never arrive after another cohort wallet is holding).
+Informative secondaries: **consensus RESCUES small wallets** (small+cons +22.8 vs small+solo −17.6, Δ +40.4
+P(Δ>0)=0.85 — small solo = the junk cell); scale main effect large−small +39.9 P(Δ>0)=0.75 (reconfirms 3e).
+HYPE: large+cons again n=1 (degenerate); small-rescue NEGATIVE (−54.8) → HYPE structurally different, quarantined.
+
+**FROZEN DECISION (per user's pre-registered rule: interaction unresolved → freeze the SIMPLER scale-only
+rule).** Candidate entry rule = **top-half-scale wallets of the capped-PnL top-30 cohort, BTC/ETH/SOL, fixed
+within-wallet (wallet-equal) sizing, 8h exit.** The two live secondary leads — "large wallets LEAD" and
+"consensus rescues SMALL wallets" — are NOT tuned further on majors (that is the forbidden consensus-tuning);
+they become HYPOTHESES for ALT external validation, where cells won't be degenerate (large+consensus was n=1
+only because majors is sparse; on alts these wallets co-hold constantly). NEXT: alts as an EXTERNAL VALIDATION
+set for the frozen scale-only rule (+ the two carried hypotheses) — NOT more majors dev, NOT MAE/MFE yet.
+Artifact: capday_interaction.py, capday_interaction_report.json.
