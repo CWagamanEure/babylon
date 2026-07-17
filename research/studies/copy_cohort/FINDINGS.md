@@ -524,3 +524,294 @@ they become HYPOTHESES for ALT external validation, where cells won't be degener
 only because majors is sparse; on alts these wallets co-hold constantly). NEXT: alts as an EXTERNAL VALIDATION
 set for the frozen scale-only rule (+ the two carried hypotheses) — NOT more majors dev, NOT MAE/MFE yet.
 Artifact: capday_interaction.py, capday_interaction_report.json.
+
+## 2026-07-16 — ALT EXTERNAL VALIDATION of the frozen scale-only rule: DIRECTIONAL REPLICATION (robust-positive, raw-spec magnitudes retracted)
+
+**Question.** Does the majors-frozen entry rule (top-half-scale wallets of the capped-PnL top-30) show
+positive copyable 8h markout on the SAME wallets' ALT entries (H1), and does LARGE out-rank SMALL (H2)?
+Prereg: `ALT_VALIDATION_PREREG.md` (frozen 2026-07-14, before any alt return was viewed).
+
+**Data unlock (feasibility probe finding).** The ledger's standing claim "Reservoir dropped alt closed_pnl"
+was WRONG about the source — Reservoir has `realized_pnl` + `start_position` (zero nulls); only our retained
+flow AGGREGATE dropped them. The frozen-cohort per-fill alt lake was already landed (`alt_ingest.py`, 333
+days, 20.2M fills, 133 wallets, 202 coins; 61% of the cohort's fills are alts). The stale one-day smoke
+`alt_episodes` part was rebuilt for all 11 months → 3,846 opening-taker alt entries (start_position=0,
+crossed, ≤90s ctx staleness), 2,495 evaluable in-test, 717 after cohort-month membership (258 LARGE /
+459 SMALL, 25 LARGE wallets, 8 folds). ~11× majors' 219 evaluable episodes; asset_ctx covers 79/79 entry coins.
+
+**Result (validator print vs adjudicated).** Validator: H1 +196.9bp boot CI [+22.7,+347.4] P=0.99; H2
+Δ+125.7 CI [−113.3,+363.1] P=0.80, 6/8 folds. Mandatory steelman + prosecutor passes (separate agents,
+independent re-derivations — `audit/copy_cohort_alt_validation/FINDINGS.md`) CONVERGED:
+- **Raw magnitudes RETRACTED as quotable:** 2/3 of the +197 headline lives in singleton/doubleton
+  wallet-folds; raw H2 is carried by ONE +3074bp POPCAT entry (drop it → Δ+9.6, P=0.47); percentile
+  bootstrap on 26 skewed clusters is anti-conservative (honest H1 wallet-level p≈0.05–0.13).
+- **The directional signal SURVIVES every knife (prosecutor's own harshest spec):** winsor-p95 + wf≥3 →
+  H2 **+87.4bp CI [+11.0,+165.3] P=0.987**, H1 +108.8 CI [+38.8,+174.9]; median shift LARGE +42.5 vs
+  SMALL −12.8 (perm p=0.004); entry MW p=0.0044; survives dropping the POPCAT wallet entirely
+  (+81.8 CI [+3.4,+165.7]) and dropping fold 202511 (H2 +92.6, P=0.965). Breadth: 17/25 LARGE wallets
+  positive vs 13/33 SMALL; win rate 58.5% vs 47.1%.
+- **Internal control:** SMALL stratum through the identical pipeline = −29.5bp — kills pipeline-bias and
+  "alts drifted up" stories. Mark quality clean (lags ≤60s, no stale fallbacks, no dupes).
+- **Dose-response (post-hoc, ex-ante variable):** the signal is STRONGEST at copyable notionals —
+  ≥$1k entries +295 mean, 12/15 wallet-folds positive (p=0.018); notional Q4 +187/+93. Dust critique backfires.
+
+**VERDICT (both gates).** DIRECTIONAL REPLICATION of the scale signal on a genuinely disjoint return
+series — robust-positive, underpowered at the raw registered spec. The prereg's "not driven by 1 wallet"
+clause fails on the RAW spec (POPCAT), so no clean "externally validated" stamp; all robust
+(non-preregistered) specs clear with CIs excluding 0. Quotable: LARGE−SMALL ≈ +85–100bp gross; H1 core
+≈ +70–110bp. Caveats: same wallets/new returns (not a fresh-wallet replication); gross edge ≈ one
+realistic alt taker round-trip (20–100bp) → economically marginal as-is; per-coin sign only 6/10.
+
+**Next (per prereg decision rule + economics):** (1) exit/cost path — the gross edge needs either maker
+execution or the ≥$250–1k notional screen (where it is strongest) to clear alt taker costs; MAE/MFE +
+own-exit study now justified on alts (N is there: 2.5k episodes); (2) fresh-wallet replication + N: the
+all-wallet Reservoir aggregate pass (~$12 egress) to run capday selection on alt+majors PnL — new wallets,
+one-shot test of the frozen rule; (3) carried hypotheses ("large lead solo", "consensus rescues small")
+testable on alts where cells aren't degenerate — needs the alt holdings/position-state build.
+
+**Artifacts.** `data/derived/copy_cohort/{alt_episodes/ (rebuilt, 11 months), capday_alt_validation_report.json}`,
+`audit/copy_cohort_alt_validation/FINDINGS.md` (both adversarial memos), `alt_episodes.py` (unchanged),
+`capday_alt_validate.py` (unchanged).
+
+## 2026-07-16 — ALT-UNIVERSE FRESH-WALLET VALIDATION (all-wallet lake, arms C/T/P): registered NEGATIVE for capday selection; Arm T = underpowered positive
+
+Ran the frozen ALT_UNIVERSE_PREREG (+addendum) on the completed all-wallet lake (334/334 days, 0 errors):
+alt_select over ~54–73k eligible wallets/fold (real-data empirical null μ0=−0.64 σ0=1.40 π0=0.964),
+8 folds, arms C (capday level) / T (t-stat) / P (EB posterior), then alt_fresh_validate on FRESH wallets
+(97–100% disjoint from the old 133). Both mandatory adversarial passes run (separate agents; memos in
+session artifacts; both reproduced the headline independently from the lake).
+
+**REGISTERED HEADLINE (Arm C + scale): NEGATIVE, adequate coverage — the capday recipe does NOT
+generalize.** H1 fresh −6.9bp CI[−127,+84]; H2 scale Δ−4.8 P=0.45; only 152 fresh entries in 8 months
+(level-selected wallets are barely followable). Per the prereg's own decision rule: **the 2026-07-16
+same-wallet alt result is DEMOTED to wallet persistence — the 133 wallets may be individually good, but
+the selector that found them does not mint new ones.** H2-scale also reverses inside arm T (small > large)
+→ the scale lead is likely a proxy the t-stat captures better; scale-only rule should not be carried.
+
+**Arm P (max-consistency EB posterior): NEGATIVE** (−14.2bp, P(>0)=0.09, n=18.3k) — extreme consistency
+selects quasi-HFT/dust profiles whose edge is not copyable at 8h (the markout study's oldest lesson).
+
+**Arm T (t-stat of capped daily PnL): UNDERPOWERED POSITIVE (the prereg's middle branch, which was frozen
+before data and therefore governs).** Robust +24.5bp CI[−3.0,+51.2]; NOT significant after registered BH
+across 3 arms (one-sided p 0.036→0.11) — no significance claim. But: LOO-positive 56/56 wallets;
+symmetric-trim stable (~+20 core); Wilcoxon on the registered unit p=0.026 (unadj); 11.8k fresh entries
+(first FOLLOWABLE cohort, ~49/day); same-pipeline C/P controls null-to-negative (kills artifact stories);
+**pre-stated notional dose-response replicates on fresh wallets with CIs excluding zero: ≥$250 +41.0
+[+8.8,+73.0] (n=2,641), ≥$1k +99.1 [+11.6,+179.2]** — same shape as the 133-wallet study. Prosecutor's
+strongest surviving points (recorded): best-of-3 argmax under null ≈ +14.7 expected (observed 0.56 se
+above); wallet-collapsed sign = chance; folds 5/8; notional-weighted pooled book +12.6 gross < alt costs;
+mechanism question OPEN — T-only picks +49 vs T∩P consensus +2.7 (steelman reads the same split as a
+monotone t-purity gradient with P-only −33; unresolved).
+
+**VERDICT (both gates, symmetric):** capday selection = clean registered negative (earned, adequate
+coverage). Arm T = underpowered positive, direction replication-grade, NOT significant, NOT deployable
+(pooled book under costs; deployable strata are secondary/hypothesis-grade). **Registered next step per
+prereg: forward paper accumulation (~2 fold-months closes the two-sided CI at the current point), NO
+re-tuning.** v2 score variants (winsorized-t, sign/binomial, downside-penalized) to be REGISTERED as new
+method slugs before any evaluation — the method-keyed scores table (incerto TICKET-0035) exists for this.
+
+Artifacts: data/derived/copy_cohort/{alt_universe_cohorts.json, alt_fresh_validation_report.json,
+informedness/fold=*/pool.parquet}; alt_select.py, alt_fresh_validate.py, informed.py, lake.py;
+ALT_UNIVERSE_PREREG.md (+addendum). Zero-overlap note: C vs T/P cohorts share 0 wallets; T∩P 24/30.
+
+## 2026-07-16 (evening) — V2 BAKEOFF + DECAY ANATOMY + CONSTRUCTION GRID (all candidate-ranking on burned folds)
+
+Three registered follow-ons to the fresh-wallet validation, all on burned folds 202511–202606 (reuse-stamped:
+ranking/diagnosis only, no significance claims). Preregs: V2_BAKEOFF_PREREG.md, DECAY_ANATOMY.md (diagnostic),
+CONSTRUCTION_PREREG.md. Interim: the z-band "rising star" refinement (TSPLIT_HYPOTHESIS.md) was killed by its
+semi-fresh probe BEFORE these ran — zband on unseen wallets −0.5bp CI[−29.8,+28.1], upper bound excludes the
+hypothesized +49 (powered negative for that effect; winner's-curse within the labeled 130). zband_semifresh.py.
+
+**1. V2 bakeoff (6 selector arms, v2_bakeoff.py):** t_v1 +27.6 [+0.7,+53.1] 7/8 folds and t_noliq +27.4
+[+2.6,+51.1] 8/8 (≈90% cohort overlap; the liq screen dodges the bad fold) lead; zband +15.6, notional-floor
++13.0, winsor_t +5.9, sign_stat +5.1 all span 0. Min BH-adj p=0.070 → still AMBER. ≥$250 stratum stronger for
+both leaders (CIs excl 0, same taint). SELECTION IS AT ITS CEILING — no alternative ranking beats plain t.
+Paper-trader arms per registered rule: t_v1 + t_noliq, entries weighted toward ≥$250.
+
+**2. Decay anatomy (decay_anatomy.py — answers "why do good-t wallets decay OOS"):** they don't. Cohort
+trader-persistence (own forward capped PnL/day > 0) = **79.7% vs 33.9% pool base rate (2.35×)** — t-selection
+finds REAL traders. The copy shortfall decomposes: 119/240 wallet-folds have ZERO evaluable alt flat-open
+entries (coverage hole); of trader-won folds 39% still copy-lose (wedge). Negative tail ≈ 53% wedge / 47%
+curse. Within-cohort, formation t/z carry NO dose signal for who fails (p≈.5–.7) → better selection stats
+can't fix it; copy CONSTRUCTION is the lever. Quadrant medians: TW·CW +63.5bp copy; TW·CL −58.6; TL·CL −68.4
+(trader-lost fwd own capday −$448/d median).
+
+**3. Construction grid (construction_study.py; 15 cells = {E1 alt flat-opens, E2 +majors, E3 +adds} ×
+{1h,4h,8h,24h,48h}; adds pulled on the DROPLET — laptop crashed streaming them; droplet pattern is now the
+default for per-fill pulls):** coverage 93→156 (E2) →165 (E3) of 240 wallet-folds — majors entries alone
+nearly double visibility. Horizon: the edge is FRONT-LOADED — E1/1h +21.8 [+7.1,+40.2] 7/8 ≈ same point as
+E1/8h +23.0 [−9.5,+59.3] at ~⅓ the CI width; E3/4h +14.5 [+3.5,+25.9] 8/8 on 2.6M entries; 24–48h cells all
+degrade/span 0. All GROSS mid-to-mid: shorter horizons fix variance/turnover, NOT the taker-cost wall.
+
+**Open decisive question (running):** lag haircut — asset_ctx is per-minute so seconds-scale follower lag
+needs the tape itself; measuring markout with follower entry = first print at trader-fill +{0,3,10,30}s +
+slippage decomposition (trader px vs next print). If the front-loaded 1h edge dies at 3–10s lag, the gross
+was trader priority/impact, not followable drift → maker-entry or nothing. Report:
+data/derived/copy_cohort/lag_haircut_report.json when done.
+
+### 2026-07-16 addendum — LAG HAIRCUT: the 1h edge is FOLLOWABLE (survives 30s lag at real print prices)
+
+Decisive economics check (lag_haircut.py; prints pulled on droplet; report lag_haircut_report.json).
+Follower entry px = FIRST TAPE PRINT at trader-fill +{0,3,10,30}s (asset_ctx is per-minute → tape is the
+only honest sub-minute basis), E1 alt flat-opens, arm-T cohorts, endpoints asset_ctx mid at +1h/+4h.
+RESULT: 1h robust wallet-equal is FLAT across lags — +18.1/+18.9/+19.5/+18.9 bp at 0/3/10/30s, ALL CIs
+exclude 0 (P>0=1.00, wf=86); slippage of lagging = median −0.6/−1.0/−1.4 bp; drop rate ≤1.5%. The
+front-loaded edge is followable drift, NOT trader priority/impact. Basis note: entry at print px embeds
+the entry-side spread → remaining costs = fees (~5–9bp RT) + exit side; wallet-equal net ≈ +10bp at 1h.
+Entry-EQUAL mean at print basis ≈ 0 → dust entries earn nothing after their spread (independently
+confirms the ≥$250 screen). 4h cells positive but CIs span 0 (variance growth) — 1h is the deployment
+horizon candidate. Same reuse stamp as the construction grid (burned folds); the paper trader confirms.
+
+### 2026-07-16 addendum 2 — LIQUIDITY CUT: the alt book's edge is in untradeable names; MAJORS is the deployable cell
+
+Post-hoc ADV-bucket cut (hypothesis-grade, burned folds) of the >=\$250 alt book @1h/10s-lag: ADV<\$1M
++39.8bp (15.6% of book — 50-150bp RT coins, unharvestable), \$1-10M −16.7, \$10-100M −15.0 (together 79%
+of the book, NEGATIVE), >\$100M +43.6 (n=134, wf=8, anecdote). The >=\$250 aggregate +41 was carried by
+illiquid names → the LIQUID-ALT copy book at 1h is NOT supported. DEPLOYABLE CELL = E2 MAJORS @1h:
++7.5bp CI[+1.2,+14.3] 7/8 folds, majors RT ~2-4bp → ~+4bp net, unlimited practical liquidity, lag-proof.
+Paper-trader spec should arm: (A) majors E2/1h book (primary), (B) liquid-alt (ADV>\$10M) book as a
+falsification arm (expected ~0 per this cut), both t_v1 + t_noliq. Illiquid-alt paper profits are to be
+reported but labeled unharvestable.
+
+### 2026-07-16 addendum 3 — K-SWEEP × VENUE + book economics: majors dead; K=100 liquid-alt = the candidate
+
+Naive daily-equity sim ($5k clips, no netting): majors book ann. Sharpe ≈ 0.12 (+$1.2k/8mo), alt book at
+30bp cost Sharpe −3.6 → per-trade edge real but naive book economics insufficient; position-state netting
+is the remaining Sharpe lever. Registered K-sweep (ksweep.py, 8 cells, burned folds): MAJORS ≤0 at every K
+(K=100 CI [−5.6,+4.5] — tight zero, venue dropped); LIQUID_ALT(ADV≥$10M) frontier improves with K →
+K=100: +15.3 [+3.6,+28.6] P=0.995, 20 entries/day, 120 wallets. FLAG: partially contradicts the addendum-2
+bucket cut (−15 on $10-100M within the K=30 book) — both burned; paper trader adjudicates. Candidate spec:
+K=100 t-stat (fresh, no-liq screen optional) × liquid-alt trailing-ADV≥$10M × ≥$250 × 1h; net ≈ 0-8bp/trade
+after lag+costs; position-state construction still untried. Census pending.
+
+### 2026-07-16 addendum 4 — COHORT CENSUS: the signal is one archetype; 12/145 are PUBLIC VAULTS
+
+COHORT_CENSUS.md/cohort_census.json (kmeans k=5, post-hoc descriptive). Copy markout concentrates in the
+"diversified alt grinder" archetype (33/145: breadth≥10 coins, taker 0.2-0.7, 100+ active days): +33 pooled
+/+26 median on 75% of copy entries; all other archetypes ≤0 or structurally uncopyable (14 pure makers emit
+zero copy entries — free selection filter). Persistent core = anonymous HFT/maker bots (real PnL, uncopyable
+flow) → explains the coverage hole + wedge. 12/145 wallets are PUBLIC HL VAULTS (16% of re-selected) incl.
+PF1 3×-selected +39bp/821 entries → VAULT-DEPOSIT arm: selector as vault-picker sidesteps lag/spread/wedge
+entirely (own the actual fills). Next registered candidates: archetype-gated K=100 liquid-alt book;
+vault-ranking deposit strategy. All hypothesis-grade (post-hoc labels) — prereg before evaluation.
+
+### 2026-07-16 addendum 5 — MAJORS-NATIVE × HORIZON: majors alpha exists at 8h (user's horizon hypothesis right)
+
+majors_native.py (registered first; burned folds, candidate-ranking). Venue-matched selection (t-stat on
+MAJORS-only capped PnL) × horizons: at 1h still ~0 (prior null NOT a selection artifact at that horizon),
+but term structure rises to K30/8h = +28.1 [+4.0,+54.8] P=0.99, 5/8 folds, 23 e/day, fading by 48h.
+K30 ≫ K100 (majors skill concentrated — opposite of alts). Survives fee/lag arithmetic at 8h. Caveats:
+10 dependent cells, 8h a-priori favored, ~16/30 cohort overlap with arm-T. PAPER-TRADER CANDIDATES now
+three: (1) K100 liquid-alt @1h (+archetype gate hypothesis), (2) K30 majors-native @8h, (3) vault-deposit
+ranking (12 public vaults). Forward paper data adjudicates all three; no further burned-fold sweeps.
+
+### 2026-07-16 addendum 6 — WALLET×COIN HIERARCHICAL SELECTOR: coin-conditioning does NOT beat pooled selection (registered CLOSING LOOK — burned folds retired)
+
+wallet_coin_selector.py (registered first; burned folds, candidate-ranking, declared LAST look).
+Per-(wallet,coin) capped-PnL t (wallet-DAY-level cap, nd_wc≥8) probit-z, EB-shrunk toward the pooled z
+(w=nd_wc/(nd_wc+20), τ=20 frozen), top-300 cells/fold, trailing-ADV≥$10M venue rule (no look-ahead),
+copy each wallet ONLY in its selected coins @8h majors/1h alts. Result: MAJORS +2.1 [−12.0,+15.9],
+ALT +1.6 [−9.7,+13.5], COMBINED +2.0 [−9.2,+12.5] — each sub-book's CI upper bound BELOW its same-venue
+baseline point (majors-native K30/8h +28.1; K100 liquid-alt/1h +15.3). Method-scoped ranking, not a
+"coin-conditioning dead" claim (combined CI still admits +12). Census: only 38% of the 1,193 selected
+cells are specialists (share≥0.5), median share 0.21 — the selector mostly picks generalists' best
+coins; shrinkage toward pooled z re-imports the dilution it tried to escape, and high-nd_wc cells skew
+HFT-ish (uncopyable flow). NOT armed on the paper trader. Selection tables at
+data/derived/copy_cohort/wallet_coin_selection/. BURNED FOLDS NOW RETIRED — paper trader only.
+
+### 2026-07-16 addendum 7 — BACKTEST + TERM-STRUCTURE-BY-ARCHETYPE: user's HFT thesis rescues the alt book at 8h
+
+BACKTEST.md (descriptive, frozen specs, all costs): majors@8h = ONLY profitable book (+$10.7k net, Sharpe
++1.02, Sortino +1.79, maxDD 20%, +13bp/trade net); liquid-alt@1h NEGATIVE net (−$19.2k, gross +12 < 21.5bp
+RT); gross positive every month (+$39k) — costs are the killer. Sizing: S1 fixed-clip sanest by principle
+(S2 per-wallet-equal anti-weights busy days — single-entry wallet-days are strongly NEGATIVE, +11-entry days
++99bp — activity-conditional entry rule registered as forward hypothesis; S3 saturated). Archetype gate lifts
+alt gross +11.9→+16.6 (helps, insufficient at 1h). TERM STRUCTURE BY ARCHETYPE (descriptive): user's thesis
+confirmed with corrected mechanism — HFT entries (3% count) have actively NEGATIVE long-horizon markout
+(−67 @24h, −121 @48h, CIs excl 0), poisoning the pooled long end; ex-{HFT,dust} ≥$250 curve RISES
+monotonically +19.6/+26.0/+50.4/+72.3/+82.0 (1h→48h), grinder archetype +65.5 @8h CI[+34,+103] → nets ~+40
+over alt costs. The 1h alt exit was a pooling artifact. FINAL PAPER SLATE (burned folds now fully retired):
+(1) majors-native K30 @8h, (2) GATED-ALT (grinder archetype, ≥$250, ADV≥$10M) @8h — REPLACES the 1h spec,
+(3) vault-deposit ranking. Convergent spec: human traders, ≥$250, 8h, both venues.
+
+### 2026-07-16 addendum 8 (CLOSING) — FINAL SLATE BACKTEST: alt copy book dead at 8h too; majors@8h + vaults is the strategy
+
+final_backtest_report.json / BACKTEST.md §FINAL SLATE (descriptive, burned): Book M majors@8h +$10,691,
+SR 1.02, +13.0bp/tr (ex-bot-entries variant slightly worse — seats matter, entries don't). Book G gated-alt
+@8h in LIQUID (trailing ADV≥$10M) names: −$8,730, −42.2bp/tr — the term-structure +65.5 grinder cell had NO
+liquidity screen; screened, the gross itself goes negative. CONCLUSION: the alt copy edge is an
+ILLIQUID-COIN phenomenon at every horizon tested (1h and 8h) — real markout, untradeable exit; market
+intelligence, not a book. Alt copying SHELVED (revisit paths: maker execution; or vault deposits, which hold
+the traders' actual alt positions natively — the only vehicle that monetizes this edge). FINAL FORWARD
+SLATE: (1) majors-native K30 @8h copy book (+ bot-seat-recovery selection variant, + daily-rolling cadence
+variant), (2) vault-deposit ranking. Burned folds fully exhausted and retired.
+
+### 2026-07-16 addendum 9 (FINAL) — RECONCILIATION: the alt edge lives in within-hold repeat entries; pyramiding is the forward hypothesis
+
+reconciliation.py/report + BACKTEST.md §RECONCILIATION. (1) Dollar-book CIs (day-block bootstrap): Book G
+−42.2 [−86.8,+1.4], firmly excludes the +65 surface (p=0.002 vs +20) — death real, not small-n; Book M
++13.0 [−17.9,+42.1] — majors book is ALSO an underpowered positive, not proven. (2) DECISIVE stage
+decomposition: grinder stat +65.5 → +54.0 after trailing-ADV (liquidity NOT the killer) → −3.6 after
+max-1-concurrent dedup: the edge sits in 2nd..Nth entries fired WHILE ALREADY IN POSITION (conviction
+bursts) — signals a single-position copy book structurally discards. User's burst intuition correct as
+DAY-STATE (K100@1h flips +5.8 net SR 1.17 under within-day ≥2-entries conditioning; underpowered post-hoc);
+burstiness-as-TRAIT refuted (corr ≈ 0). Sparse-wallet hypothesis (mine) refuted. FORWARD SLATE (final):
+(1) majors-native K30 @8h [underpowered +], (2) PYRAMIDING alt book — add-on-repeat-entry, harvesting the
+burst edge as SIZE not entries [new registered hypothesis], (3) vault-deposit ranking, (4) day-state
+conditioning variant. Burned folds exhausted; every open question now has a named forward test.
+
+### 2026-07-17 — PYRAMID-ALT mechanics verified: ladder harvests the burst edge gross (+21.8bp/u); net sits exactly on the taker-cost wall
+
+pyramid_book.py per frozen PYRAMID_ALT_PREREG.md (descriptive, no variants): 3,668 units/1,713 theses,
+gross +21.8bp/u (+$19.9k) — first dollar realization of the +65 repeat-entry surface — net +0.25bp/u
+CI[−27.5,+25.9] vs 21.5bp taker RT. VERDICT: the alt edge is real and harvestable GROSS by the ladder;
+economics hinge entirely on execution cost → the maker shadow book (fill-rate vs ~2bp) is THE forward
+number. Slate final: PYRAMID-ALT lead (maker path decisive), majors@8h side, vaults, day-state variant.
+Deviations to add before arming: trader-exit hard stop, maker shadow. Forward criteria per prereg (60/120d).
+
+### 2026-07-17 addendum — WALLET ATTRIBUTION: user's dragger thesis confirmed for the alt book (taker-side HFT leak)
+
+wallet_attribution.{py,md}/report (descriptive, ex-post caveats stamped). Book P (pyramid): broad positive
+body (59% wallets+, median +31.5bp/wallet) dragged to +0.25 by concentrated blowups — #1 dragger is a
+22k-fills/day TAKER-side HFT bot (0 majors formation) that the taker-share<0.1 screen structurally misses:
+−$7.4k/888 units; ex-dragger-1 book = +10.9bp NET at taker costs. Dragger profile: hyperactive/breadth/bot
+(trades/day 19.9 vs 3.7 winners; nothing p<0.05, hypothesis-grade). PREREG AMENDMENT (intent-implementation,
+timing stamped): add fills/day<1000 bot screen (pre-existing majors_archetype criterion) to PYRAMID_ALT spec.
+Book M (majors): NOT a dragger story — winners' book (6 majors-only specialists carry +20bp; typical wallet
+flat; drop-best-7 goes negative). Hypothesis-grade lean: majors book wants majors-SPECIALISTS (high majors
+share, low breadth); losers were breadth/alt profiles ranked on majors t. Registered as forward variant only.
+
+### 2026-07-17 addendum 2 — VENUE-MATCH RE-CUT: convergence story NOT confirmed; M-specialist lean re-expressed, P anti-monotone
+
+venue_match.{py}/venue_match_report.json + WALLET_ATTRIBUTION.md §VENUE-MATCH (descriptive, burned folds,
+post-hoc-motivated cut of a pre-existing feature; dependent cells). Formation 3-mo majors-share buckets on
+both frozen books. M: PnL fully concentrated in MATCHED specialists (97% of net $, +23.0 vs +3.8 bp pooled;
+wallet-equal gross +20.1 vs −30.9) but MISMATCHED cell empty (1 wf/6 trades — selector admits no alt
+wallets), MATCHED CI [−22.7,+73.1] spans 0, %wf>0 ≈ equal → same p≈0.07 lean re-expressed, NOT new evidence.
+P: pooled net ANTI-monotone (majors-profile MISMATCHED +13.1 > MIXED +5.2 > alt-native MATCHED −4.3); the
+alt-native deficit is the known taker-HFT dragger (ex-0x223537ac MATCHED ≈ +17.2bp) — P's drag is the BOT
+screen, not venue; NO alt-native filter justified. 0xa1b6d8ef sign-flip debunked as venue story: MIXED
+(maj% 0.37–0.54) in both books every fold; flip = fold-timing noise. Forward: only the already-registered
+M majors_share≥0.8 specialist variant survives (cost now quantified: sheds ~15% flow / ~3% PnL burned).
+
+### 2026-07-17 addendum — CONSENSUS CONDITIONING (pre-declared 3W×3L grid + top-t variant, both books)
+
+consensus_conditioning.py / consensus_report.json / WALLET_ATTRIBUTION.md §consensus (descriptive, burned,
+20 dependent cells, grid stamped before outcomes). Entry-equal NET: crowd (≥2 others, same coin+dir, trailing
+W) positive in ALL 6 (book,W) cells (A +92/+60/+42; B +37/+33/+31) while solo ≈0-to-negative everywhere —
+both books' entire net profit sits in crowd entries. Strict pre-set rule (CI-clear + all-window consistent):
+NOTHING qualifies. CI-clearing cells (2/20, uncorrected): B/1h/crowd +54.7 [+15,+101]; TOP-HALF-T consensus —
+B gap +121 [+32,+203], A crowd +98.7 [+46,+155] — replicates the sparse majors "consensus rescues" lean in
+both books. Volume at crowd: B 57-79%, A 22-47% (deployable gate, not thin). REGISTERED FORWARD VARIANT:
+consensus-gate arm (skip solo entries; smart-money variant = top-half-t pool, W=6h) on both paper books.
+Hypothesis-grade until forward data.
+
+### 2026-07-17 addendum (WRAP) — CONSENSUS-GATED BACKTEST: combined smart-money book = SR 1.89, the study's best
+
+gated_backtest.py / gated_backtest_report.json / BACKTEST.md §CONSENSUS-GATED (descriptive; gate ex-post-
+conditioned — NOT forward evidence). Combined smart-money book (pyramid-alt bot-screened + majors K30, skip-
+solo/top-half-t 6h gate): +$15,167 net / +30.2bp/tr / SR 1.89 / Sortino 3.12 / maxDD 8.9% / 6/8 months+,
+CI [−7.2,+69.8] (includes 0). Gate halves turnover, ~doubles per-trade net, does NOT shrink DD (concentrates);
+202604 = 65% of profit. Per-book: pyramid crowd SR 1.45 (+$11.1k, +35.9bp); majors smart SR 1.28 (+$6.4k,
++23.7bp). FORWARD MUST CONFIRM: gated−ungated gap ~+15-20bp; smart>crowd>solo ordering; SR>1 sans single-
+month dependence. This is the paper-trader target spec; burned-fold work concludes here.

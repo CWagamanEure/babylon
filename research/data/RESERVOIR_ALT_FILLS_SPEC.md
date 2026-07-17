@@ -35,8 +35,11 @@ Swarm verdict: **source is byte-identical to node_fills on the majors overlap** 
   SCHEMA_VERSION+commit. (Prevents a code change forcing a full ~$12 re-egress.)
 - Manifest shard stores `{object_key, etag, last_modified, size_bytes, schema_version, code_commit, row_count,
   ts_min, ts_max, status}`. Atomic write: part first, done-shard second, `os.replace` (mirror `ingest.py`).
-- `ts` = **int64 instant cast** `CAST(timestamp AS TIMESTAMP)::BIGINT`/pyarrow int64 — NEVER `epoch_ms()`/
-  `AT TIME ZONE`/session-tz (repo `.venv` has no `pytz`; `epoch_ms` hard-errors). Value is already UTC epoch-ms.
+- `ts` = **`epoch_ms(timestamp)`** (TIMESTAMPTZ → instant-based epoch-ms; session-timezone-INDEPENDENT —
+  empirically verified identical under UTC/Tokyo/NY, 2026-07-16 audit). ⚠️ CORRECTION of the earlier rule
+  here: `CAST(timestamp AS TIMESTAMP)` is the DANGEROUS one (naive cast shifts by session tz — probed:
+  12:34 UTC → 08:34 wall under America/New_York) and `epoch_ms()` in SQL does NOT touch pytz (the pytz
+  hazard is Python-side `to_timestamp` fetch conversion only). Never use the naive TIMESTAMP cast.
 - `order_id`/`trade_id`/`twap_id` are **uint64** → keep UBIGINT or store VARCHAR; never blind `CAST AS BIGINT`
   (overflow). Money casts DECIMAL→DECIMAL(38,18) or DECIMAL→VARCHAR, **never** DECIMAL→DOUBLE.
 - Memory: per-day one file, `threads=1`, `memory_limit≈1200MB`, column projection, streaming `COPY`; never a
