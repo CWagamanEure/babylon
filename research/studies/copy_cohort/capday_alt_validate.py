@@ -23,8 +23,8 @@ import json
 import numpy as np
 
 from research.data.markout import _connect, REPO_ROOT
-from . import base as basemod
 from . import capday_book as cb
+from . import lake
 
 FROZEN = REPO_ROOT / "data" / "derived" / "copy_cohort" / "frozen_alt_universe.json"
 ALT_EP = str(REPO_ROOT / "data" / "derived" / "copy_cohort" / "alt_episodes" / "month=*" / "part.parquet")
@@ -69,13 +69,24 @@ def _wallet_equal(mk, wallet, fold):
             "n": int(mk.size), "n_wf": int(uk.size), "n_wallets": int(np.unique(wallet).size)}
 
 
+def _pseudo(pick, idx):
+    """Per-draw pseudo-cluster wallet labels ('wallet#j').
+
+    AUDIT FIX 2026-07-17 (multiplicity-preserving cluster bootstrap): duplicate wallet
+    picks previously collapsed in np.unique(wallet|fold) -> bootstrap variance understated.
+    Tagging each draw as its own pseudo-cluster preserves multiplicity (ksweep-equivalent)."""
+    return np.concatenate([np.full(idx[x].size, f"{x}#{j}") for j, x in enumerate(pick)])
+
+
 def _paired_h2(e, rng):
     """Paired wallet-cluster bootstrap of Δ = R(large) − R(small)."""
     w = e["wallet"]; uw = np.unique(w); idx = {x: np.flatnonzero(w == x) for x in uw}
     dR = np.empty(N_BOOT)
     for b in range(N_BOOT):
-        rows = np.concatenate([idx[x] for x in rng.choice(uw, size=uw.size, replace=True)])
-        mk = e["mk"][rows]; fold = e["fold"][rows]; large = e["large"][rows]; wal = e["wallet"][rows]
+        pick = rng.choice(uw, size=uw.size, replace=True)
+        rows = np.concatenate([idx[x] for x in pick])
+        wal = _pseudo(pick, idx)                        # multiplicity-preserving labels
+        mk = e["mk"][rows]; fold = e["fold"][rows]; large = e["large"][rows]
         def R(mask):
             if mask.sum() == 0:
                 return np.nan
@@ -93,8 +104,10 @@ def _h1_bootstrap(mk, wallet, fold, rng):
     uw = np.unique(wallet); idx = {x: np.flatnonzero(wallet == x) for x in uw}
     R = np.empty(N_BOOT)
     for b in range(N_BOOT):
-        rows = np.concatenate([idx[x] for x in rng.choice(uw, size=uw.size, replace=True)])
-        key = np.array([f"{a}|{c}" for a, c in zip(wallet[rows], fold[rows])])
+        pick = rng.choice(uw, size=uw.size, replace=True)
+        rows = np.concatenate([idx[x] for x in pick])
+        wal = _pseudo(pick, idx)                        # multiplicity-preserving labels
+        key = np.array([f"{a}|{c}" for a, c in zip(wal, fold[rows])])
         _, ki = np.unique(key, return_inverse=True)
         R[b] = (np.bincount(ki, weights=mk[rows]) / np.bincount(ki)).mean()
     return {"mean_bp": float(R.mean()), "ci": [float(np.quantile(R, .025)), float(np.quantile(R, .975))],
@@ -110,8 +123,9 @@ def run():
     S = {k: e[k][~e["large"]] for k in ("mk", "wallet", "fold", "coin")}
 
     rep = {"config": {"metric": "gross wallet-equal 8h markout bp", "cost_sens_bp": COST_SENS_BP,
-                      "n_boot": N_BOOT, "seed": SEED, "code_commit": basemod._git_commit(),
-                      "prereg": "ALT_VALIDATION_PREREG.md"},
+                      "n_boot": N_BOOT, "seed": SEED, "code_commit": lake.git_describe(),
+                      "prereg": "ALT_VALIDATION_PREREG.md",
+                      "audit_2026_07_17": "multiplicity-preserving cluster boot"},
            "coverage": {"n_evaluable": int(e["mk"].size), "n_large_entries": nlarge,
                         "n_small_entries": int((~e["large"]).sum()), "n_folds": nfold,
                         "n_large_wallets": nlw, "n_coins": int(np.unique(e["coin"]).size),

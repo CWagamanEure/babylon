@@ -130,7 +130,14 @@ def consensus_counts(ent, sigs, tops):
 
 # ------------------------------------------------------------------ book builders
 def build_b_book(ent, mask):
-    """Majors dollar book: ts-ordered, max 1 concurrent per (wallet,coin), $50k/coin cap."""
+    """Majors dollar book: ts-ordered, max 1 concurrent per (wallet,coin), $50k/coin cap.
+
+    NOTE (audit 2026-07-17): applying a gate via `mask` BEFORE this acceptance pass is
+    burst-entangled — removing an earlier entry can free a (wallet,coin) slot / cap headroom
+    and admit entries the ungated book skipped, so the gated book is NOT a subset of the
+    ungated book's entries. The correct ordering is acceptance FIRST (mask=all), then the
+    gate as a pure subset via `subset_b_book`. The masked form is kept only for the labeled
+    'gate-pre-concurrency (burst-entangled)' comparison rows."""
     idx = np.flatnonzero(mask)
     order = idx[np.lexsort((ent["coin"][idx], ent["wallet"][idx], ent["ts"][idx]))]
     open_until: dict[tuple[str, str], int] = {}
@@ -153,10 +160,23 @@ def build_b_book(ent, mask):
         heapq.heappush(h, ex)
         keep.append(i)
     k = np.array(keep, np.int64)
-    return {"ts_fill": ent["ts"][k], "exit_ts": ent["ts"][k] + HOLD_MS,
+    book = {"ts_fill": ent["ts"][k], "exit_ts": ent["ts"][k] + HOLD_MS,
             "net": ent["net_bp"][k] * 1e-4 * UNIT_USD,
             "gross": ent["gross_bp"][k] * 1e-4 * UNIT_USD,
             "n_candidates": int(idx.size), "n_skip_concurrent": n_conc, "n_skip_cap": n_cap}
+    book["accepted_idx"] = k
+    return book
+
+
+def subset_b_book(ent, accepted_idx, mask):
+    """AUDIT FIX 2026-07-17: gate = pure SUBSET of the ungated book's accepted entries
+    (concurrency/dedup applied FIRST on the full stream) — matches the 'same entries'
+    claim; no cap headroom is re-opened by the gate."""
+    k = accepted_idx[mask[accepted_idx]]
+    return {"ts_fill": ent["ts"][k], "exit_ts": ent["ts"][k] + HOLD_MS,
+            "net": ent["net_bp"][k] * 1e-4 * UNIT_USD,
+            "gross": ent["gross_bp"][k] * 1e-4 * UNIT_USD,
+            "n_candidates": int(k.size), "n_skip_concurrent": 0, "n_skip_cap": 0}
 
 
 def a_book(units, mask):
@@ -268,14 +288,25 @@ def run():
     b_n6, b_ntop = consensus_counts(ent_b, sig_b, top_b)
 
     all_a = np.ones(len(a_units), bool)
+    # AUDIT FIX 2026-07-17: acceptance (concurrency/dedup + cap) runs FIRST on the full B
+    # stream; the gates are then PURE SUBSETS of the accepted entries (B_crowd/B_smart).
+    # The old ordering (gate before acceptance — burst-entangled: dropping an entry frees
+    # slots/headroom and admits entries the ungated book skipped) is kept only as labeled
+    # comparison rows (*_preconc). Book A was already a pure unit filter on the sim stream.
+    b_ungated = build_b_book(ent_b, np.ones(ent_b["ts"].size, bool))
+    b_acc = b_ungated.pop("accepted_idx")
     books = {
         "A_ungated": a_book(a_units, all_a),
         "A_crowd": a_book(a_units, a_n6 >= 1),
         "A_smart": a_book(a_units, a_ntop >= 1),
-        "B_ungated": build_b_book(ent_b, np.ones(ent_b["ts"].size, bool)),
-        "B_crowd": build_b_book(ent_b, b_n6 >= 1),
-        "B_smart": build_b_book(ent_b, b_ntop >= 1),
+        "B_ungated": b_ungated,
+        "B_crowd": subset_b_book(ent_b, b_acc, b_n6 >= 1),
+        "B_smart": subset_b_book(ent_b, b_acc, b_ntop >= 1),
     }
+    for nm, msk in (("B_crowd_preconc", b_n6 >= 1), ("B_smart_preconc", b_ntop >= 1)):
+        bk = build_b_book(ent_b, msk)
+        bk.pop("accepted_idx")
+        books[nm] = bk
     books["COMBINED_smart"] = merge_books(books["A_smart"], books["B_smart"])
 
     rows, dnets = {}, {}
@@ -309,6 +340,12 @@ def run():
                "book_b": "majors K30 @8h, $2.5k equal-unit per entry (wallet_attribution "
                          "convention); max 1 concurrent per (wallet,coin); $50k/coin cap; "
                          "net = mk8 - 5.5bp",
+               "gate_ordering": "AUDIT FIX 2026-07-17: acceptance (concurrency+cap) runs "
+                                "first on the full stream; gates are pure subsets of the "
+                                "accepted entries. Old gate-before-acceptance ordering kept "
+                                "only as *_preconc rows ('gate-pre-concurrency, "
+                                "burst-entangled') for comparison.",
+               "code_commit": cc.lake.git_describe(),
                "daily_attribution": "entry-fill UTC day (pyramid_book convention)",
                "max_dd_pct_basis": "maxDD$ / max gross exposure of the row",
                "daily_hit_rate": "P(day net > 0 | day net != 0)",
@@ -328,21 +365,33 @@ ROW_TITLES = {
     "A_crowd": "2. Pyramid-alt — CROWD gate",
     "A_smart": "3. Pyramid-alt — SMART gate",
     "B_ungated": "4. Majors K30@8h — ungated",
-    "B_crowd": "5. Majors K30@8h — CROWD gate",
-    "B_smart": "6. Majors K30@8h — SMART gate",
+    "B_crowd": "5. Majors K30@8h — CROWD gate (subset of accepted)",
+    "B_smart": "6. Majors K30@8h — SMART gate (subset of accepted)",
+    "B_crowd_preconc": "5b. Majors K30@8h — CROWD gate-pre-concurrency (burst-entangled)",
+    "B_smart_preconc": "6b. Majors K30@8h — SMART gate-pre-concurrency (burst-entangled)",
     "COMBINED_smart": "7. COMBINED — SMART gate",
 }
 
 
 def append_md(rep):
-    lines = ["\n\n# CONSENSUS-GATED BACKTEST — descriptive book mechanics (burned folds)\n",
+    lines = ["\n\n# CONSENSUS-GATED BACKTEST — descriptive book mechanics (burned folds) "
+             "[2026-07-17 AUDIT-FIX RE-PRINT]\n",
              f"**STAMP: {rep['stamp']}**\n",
              "Gate variants were named after viewing the consensus decomposition "
-             "(WALLET_ATTRIBUTION.md grid) — these are the SAME entries re-weighted by an "
-             "ex-post-chosen condition; the only legitimate use is sizing the forward paper "
-             "expectation. S1 sizing: $2.5k/unit (alt ladder caps inside sim) and $2.5k/entry "
+             "(WALLET_ATTRIBUTION.md grid); the only legitimate use is sizing the forward paper "
+             "expectation. **Gate ordering (audit fix 2026-07-17):** concurrency/dedup + coin-cap "
+             "acceptance runs FIRST on the full majors stream; the gated rows (5, 6) are then "
+             "pure SUBSETS of the ungated book's accepted entries — so the 'same entries' claim "
+             "now actually holds. The earlier re-print's gated majors rows applied the gate "
+             "BEFORE acceptance, which is burst-entangled (removing an earlier entry frees the "
+             "(wallet,coin) slot / cap headroom and admits entries the ungated book skipped) — "
+             "that prose claimed 'the SAME entries', which was false for book B; the old "
+             "ordering is retained only as the labeled rows 5b/6b for comparison. Book A's gate "
+             "was already a pure unit filter on the simulated stream. S1 sizing: $2.5k/unit "
+             "(alt ladder caps inside sim) and $2.5k/entry "
              "majors (wallet_attribution equal-unit convention), max 1 concurrent per "
-             "(wallet,coin) + $50k/coin cap on majors; costs 21.5bp alt / 5.5bp majors RT.\n",
+             "(wallet,coin) + $50k/coin cap on majors; costs 21.5bp alt / 5.5bp majors RT. "
+             f"code_commit {rep['config']['code_commit']}.\n",
              "| row | n (%ungated) | net $ | gross $ | bp/tr | boot CI95 | SR | Sortino | "
              "maxDD $ (%maxExp) | hit | avg/max exp $ |",
              "|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -359,11 +408,12 @@ def append_md(rep):
             f"{r['max_gross_exposure_usd']:,.0f} |")
     lines.append("\nMonthly net PnL, row 7 (COMBINED smart): " + "; ".join(
         f"{k}: {v:+,.0f}" for k, v in rep["monthly_net_combined_smart"].items()))
-    lines.append("\nMajors book funnel (candidates -> skips): " + "; ".join(
+    lines.append("\nMajors book funnel (candidates -> skips; subset-gate rows have zero skips "
+                 "by construction): " + "; ".join(
         f"{k}: {rep['rows'][k]['n_gate_candidates']:,} cand, "
         f"{rep['rows'][k]['n_skip_concurrent']:,} concurrent-skip, "
         f"{rep['rows'][k]['n_skip_cap']} cap-skip"
-        for k in ("B_ungated", "B_crowd", "B_smart")))
+        for k in ("B_ungated", "B_crowd", "B_smart", "B_crowd_preconc", "B_smart_preconc")))
     lines.append("\nArtifact: `data/derived/copy_cohort/gated_backtest_report.json`.\n")
     with OUT_MD.open("a") as fh:
         fh.write("\n".join(lines))

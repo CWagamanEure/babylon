@@ -71,6 +71,16 @@ def _forward_entries(con, fold: int, wallets: list[str]):
         FROM p8""").fetchnumpy()
 
 
+def _np(a, dtype=float):
+    """fetchnumpy → plain ndarray; NULL-masked cells become NaN (never fill garbage).
+
+    AUDIT FIX 2026-07-17: bare np.asarray on a duckdb masked column silently exposes the
+    underlying fill values where the column was NULL; those can be finite and leak into
+    the analysis. Same helper as construction_study._np."""
+    a = np.ma.filled(a, np.nan) if np.ma.isMaskedArray(a) else a
+    return np.asarray(a, dtype)
+
+
 # ---------- registered robust-spec estimators ----------
 
 def _robust_mask(mk, wallet, fold):
@@ -94,20 +104,36 @@ def _wallet_equal(mk, wallet, fold):
     return float(wf.mean()), wf, wf_wal
 
 
+def _pseudo_labels(pick, idx):
+    """Per-draw pseudo-cluster wallet labels ('wallet#j') for a resample `pick` over `idx`.
+
+    AUDIT FIX 2026-07-17 (multiplicity-preserving cluster bootstrap): the old code
+    concatenated duplicate wallet picks but the statistic keys on wallet|fold with
+    np.unique, so duplicate draws of the same wallet COLLAPSED into one cluster and the
+    bootstrap variance was understated. Tagging each draw j as its own pseudo-cluster
+    preserves multiplicity — equivalent to the weighted pattern verified in ksweep."""
+    return np.concatenate([np.full(idx[x].size, f"{x}#{j}") for j, x in enumerate(pick)]) \
+        if len(pick) else np.array([], dtype=str)
+
+
 def _cluster_boot(mk, wallet, fold, rng):
     uw = np.unique(wallet)
     idx = {x: np.flatnonzero(wallet == x) for x in uw}
     stats = np.empty(N_BOOT)
     for b in range(N_BOOT):
-        rows = np.concatenate([idx[x] for x in rng.choice(uw, uw.size, replace=True)])
-        stats[b] = _wallet_equal(mk[rows], wallet[rows], fold[rows])[0]
+        pick = rng.choice(uw, uw.size, replace=True)
+        rows = np.concatenate([idx[x] for x in pick])
+        stats[b] = _wallet_equal(mk[rows], _pseudo_labels(pick, idx), fold[rows])[0]
     stats = stats[np.isfinite(stats)]
     return {"ci": [float(np.quantile(stats, .025)), float(np.quantile(stats, .975))],
             "p_gt0": float((stats > 0).mean())}
 
 
 def _paired_delta_boot(e_a, e_b, rng):
-    """Paired wallet-cluster bootstrap of Δ = R(a) − R(b); wallets in both arms resampled once."""
+    """Paired wallet-cluster bootstrap of Δ = R(a) − R(b); wallets in both arms resampled once.
+
+    AUDIT FIX 2026-07-17: pseudo-cluster tags preserve duplicate-pick multiplicity (see
+    _pseudo_labels); the same pick (with the same tags) is applied to both arms — pairing kept."""
     uw = np.unique(np.concatenate([e_a["wallet"], e_b["wallet"]]))
     ia = {x: np.flatnonzero(e_a["wallet"] == x) for x in uw}
     ib = {x: np.flatnonzero(e_b["wallet"] == x) for x in uw}
@@ -116,8 +142,10 @@ def _paired_delta_boot(e_a, e_b, rng):
         pick = rng.choice(uw, uw.size, replace=True)
         ra = np.concatenate([ia[x] for x in pick]) if any(ia[x].size for x in pick) else np.array([], int)
         rb = np.concatenate([ib[x] for x in pick]) if any(ib[x].size for x in pick) else np.array([], int)
-        ma = _wallet_equal(e_a["mk"][ra], e_a["wallet"][ra], e_a["fold"][ra])[0] if ra.size else np.nan
-        mb = _wallet_equal(e_b["mk"][rb], e_b["wallet"][rb], e_b["fold"][rb])[0] if rb.size else np.nan
+        la = _pseudo_labels(pick, ia) if ra.size else ra
+        lb = _pseudo_labels(pick, ib) if rb.size else rb
+        ma = _wallet_equal(e_a["mk"][ra], la, e_a["fold"][ra])[0] if ra.size else np.nan
+        mb = _wallet_equal(e_b["mk"][rb], lb, e_b["fold"][rb])[0] if rb.size else np.nan
         d[b] = (ma - mb) if (ma is not None and mb is not None) else np.nan
     d = d[np.isfinite(d)]
     if d.size == 0:
@@ -126,15 +154,31 @@ def _paired_delta_boot(e_a, e_b, rng):
             "p_gt0": float((d > 0).mean()), "n_boot_valid": int(d.size)}
 
 
-def _median_perm(x_a, x_b, rng, n=10_000):
+def _median_perm(e_a, e_b, rng, n=10_000):
+    """Median-difference permutation, WALLET-label permutation.
+
+    AUDIT FIX 2026-07-17: the old test permuted individual ENTRIES between arms, ignoring
+    wallet clustering (entries of one wallet are dependent) — anti-conservative. Now whole
+    wallets are reassigned between arms (a wallet's entries move together); arm sizes are
+    held at the observed wallet counts."""
+    x_a, x_b = e_a["mk"], e_b["mk"]
     obs = np.median(x_a) - np.median(x_b)
-    pool = np.concatenate([x_a, x_b]); na = x_a.size
-    hits = 0
+    wal = np.concatenate([e_a["wallet"].astype(str), e_b["wallet"].astype(str)])
+    mk = np.concatenate([x_a, x_b])
+    uw, inv = np.unique(wal, return_inverse=True)
+    na_w = min(int(np.unique(e_a["wallet"].astype(str)).size), uw.size - 1)
+    hits = n_valid = 0
     for _ in range(n):
-        rng.shuffle(pool)
-        if np.median(pool[:na]) - np.median(pool[na:]) >= obs:
+        in_a = np.zeros(uw.size, bool)
+        in_a[rng.permutation(uw.size)[:na_w]] = True
+        ma = in_a[inv]
+        if not ma.any() or ma.all():
+            continue
+        n_valid += 1
+        if np.median(mk[ma]) - np.median(mk[~ma]) >= obs:
             hits += 1
-    return {"obs": float(obs), "p": (hits + 1) / (n + 1)}
+    return {"obs": float(obs), "p": (hits + 1) / (n_valid + 1), "unit": "wallet",
+            "n_perm_valid": n_valid}
 
 
 def _stratum(e, mask):
@@ -181,16 +225,17 @@ def run():
             print(f"  fold {fold}: no ctx, skipped", flush=True)
             continue
         w = d["wallet"].astype(str)
-        ok = np.isfinite(np.asarray(d["mk"], float))
+        mk_all = _np(d["mk"])
+        ok = np.isfinite(mk_all)
         for arm, adef in f["arms"].items():
             mem = adef["members"]
             in_arm = np.array([x in mem for x in w]) & ok
             pa = per_arm[arm]
-            pa["mk"].append(np.asarray(d["mk"], float)[in_arm])
+            pa["mk"].append(mk_all[in_arm])
             pa["wallet"].append(w[in_arm])
             pa["fold"].append(np.full(in_arm.sum(), fold))
             pa["coin"].append(d["coin"].astype(str)[in_arm])
-            pa["notl"].append(np.asarray(d["notl"], float)[in_arm])
+            pa["notl"].append(_np(d["notl"])[in_arm])
             pa["large"].append(np.array([mem[x]["large"] is True for x in w[in_arm]]))
             pa["fresh"].append(np.array([x not in old133 for x in w[in_arm]]))
     arms = {}
@@ -199,7 +244,10 @@ def run():
 
     rng = np.random.default_rng(SEED)
     rep = {"config": {"n_boot": N_BOOT, "seed": SEED, "robust_spec": "winsor p95 |mk|, wf>=3",
-                      "prereg": "ALT_UNIVERSE_PREREG.md (+addendum)", "gates": GATES},
+                      "prereg": "ALT_UNIVERSE_PREREG.md (+addendum)", "gates": GATES,
+                      "code_commit": lake.git_describe(),
+                      "audit_2026_07_17": "multiplicity-preserving cluster boot; wallet-label "
+                                          "median perm; masked->NaN markout guard"},
            "arms": {}}
 
     for a in ("C", "T", "P"):
@@ -225,7 +273,7 @@ def run():
             ent["H2_scale"] = {"large": iL, "small": iS}
             if rl is not None and rs is not None and rl["mk"].size and rs["mk"].size:
                 ent["H2_scale"]["paired_delta"] = _paired_delta_boot(rl, rs, rng)
-                ent["H2_scale"]["median_perm"] = _median_perm(rl["mk"].copy(), rs["mk"].copy(),
+                ent["H2_scale"]["median_perm"] = _median_perm(rl, rs,
                                                               np.random.default_rng(SEED + 7))
             ent["coverage"] = {"n_fresh_large_entries": int(fl.sum()),
                                "n_folds": int(np.unique(e["fold"][e["fresh"]]).size) if e["fresh"].any() else 0,

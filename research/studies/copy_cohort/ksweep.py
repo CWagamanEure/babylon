@@ -18,7 +18,7 @@ import numpy as np
 from research.data.markout import REPO_ROOT
 from research.lib.cv import MONTHS
 from . import lake
-from .alt_fresh_validate import _ctx_parts, MAJORS, STALE_MS
+from .alt_fresh_validate import _ctx_parts, _np, MAJORS, STALE_MS
 
 DERIVED = REPO_ROOT / "data" / "derived" / "copy_cohort"
 POOL_DIR = DERIVED / "informedness"
@@ -152,14 +152,14 @@ def run():
         top = _top100(f, frozen)
         n_sel_wf += len(top)
         adv, d = _fold_pull(con, f, top)
-        mk = np.asarray(d["mk"], float)
+        mk = _np(d["mk"])          # masked->NaN guard (audit 2026-07-17); never bare asarray
         ok = np.isfinite(mk)
         coin = d["coin"].astype(str)[ok]
         rows["mk"].append(mk[ok])
         rows["wallet"].append(d["wallet"].astype(str)[ok])
         rows["fold"].append(np.full(ok.sum(), f))
         rows["coin"].append(coin)
-        rows["rk"].append(np.asarray(d["rk"], int)[ok])
+        rows["rk"].append(_np(d["rk"], int)[ok])
         is_major = np.isin(coin, MAJORS)
         rows["liq_alt"].append(~is_major & np.array([adv.get(c, 0.0) >= ADV_MIN for c in coin]))
         print(f"  fold {f}: {ok.sum():,} evaluable entries "
@@ -174,7 +174,10 @@ def run():
                       "adv_lookahead": "test-month ADV (mild liquidity look-ahead; "
                       "deployment uses trailing ADV)",
                       "robust_spec": "winsor p95 in cell, wf>=3, wallet-fold-equal",
-                      "n_boot": N_BOOT, "seed": SEED, "cal_days": CAL_DAYS},
+                      "n_boot": N_BOOT, "seed": SEED, "cal_days": CAL_DAYS,
+                      "code_commit": lake.git_describe(),
+                      "audit_2026_07_17": "masked->NaN markout guard (weighted cluster boot "
+                                          "here was already multiplicity-correct)"},
            "cells": {}}
     for ki, K in enumerate(KS):
         in_k = e["rk"] < K

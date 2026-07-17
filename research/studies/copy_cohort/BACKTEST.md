@@ -389,3 +389,28 @@ Monthly net PnL, row 7 (COMBINED smart): 202511: -4,510; 202512: -1,964; 202601:
 Majors book funnel (candidates -> skips): B_ungated: 5,494 cand, 3,851 concurrent-skip, 0 cap-skip; B_crowd: 4,354 cand, 3,160 concurrent-skip, 0 cap-skip; B_smart: 3,972 cand, 2,898 concurrent-skip, 0 cap-skip
 
 Artifact: `data/derived/copy_cohort/gated_backtest_report.json`.
+
+
+# CONSENSUS-GATED BACKTEST — descriptive book mechanics (burned folds) [2026-07-17 AUDIT-FIX RE-PRINT]
+
+**STAMP: DESCRIPTIVE BOOK MECHANICS — burned folds 202511-202606; consensus gate adopted AFTER viewing the consensus decomposition => all numbers EX-POST-CONDITIONED, NOT quotable as forward evidence; only the two pre-named gate variants run (no sweeps).**
+
+Gate variants were named after viewing the consensus decomposition (WALLET_ATTRIBUTION.md grid); the only legitimate use is sizing the forward paper expectation. **Gate ordering (audit fix 2026-07-17):** concurrency/dedup + coin-cap acceptance runs FIRST on the full majors stream; the gated rows (5, 6) are then pure SUBSETS of the ungated book's accepted entries — so the 'same entries' claim now actually holds. The earlier re-print's gated majors rows applied the gate BEFORE acceptance, which is burst-entangled (removing an earlier entry frees the (wallet,coin) slot / cap headroom and admits entries the ungated book skipped) — that prose claimed 'the SAME entries', which was false for book B; the old ordering is retained only as the labeled rows 5b/6b for comparison. Book A's gate was already a pure unit filter on the simulated stream. S1 sizing: $2.5k/unit (alt ladder caps inside sim) and $2.5k/entry majors (wallet_attribution equal-unit convention), max 1 concurrent per (wallet,coin) + $50k/coin cap on majors; costs 21.5bp alt / 5.5bp majors RT. code_commit 1535c74-dirty.
+
+| row | n (%ungated) | net $ | gross $ | bp/tr | boot CI95 | SR | Sortino | maxDD $ (%maxExp) | hit | avg/max exp $ |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1. Pyramid-alt — ungated | 2,319 (100.0%) | +9,487 | +21,951 | +16.4 | [-21.7, +52.8] P>0=0.79 | 1.04 | 1.62 | -5,669 (6.3%) | 0.484 | 8,920 / 90,000 |
+| 2. Pyramid-alt — CROWD gate | 1,232 (53.1%) | +11,061 | +17,683 | +35.9 | [-21.1, +91.4] P>0=0.89 | 1.45 | 2.3 | -6,565 (7.29%) | 0.569 | 4,616 / 90,000 |
+| 3. Pyramid-alt — SMART gate | 933 (40.2%) | +8,808 | +13,822 | +37.8 | [-36.3, +110.2] P>0=0.84 | 1.24 | 1.91 | -7,959 (8.84%) | 0.561 | 3,496 / 90,000 |
+| 4. Majors K30@8h — ungated | 1,643 (100.0%) | +5,346 | +7,605 | +13.0 | [-16.9, +44.0] P>0=0.80 | 1.02 | 1.79 | -4,265 (18.96%) | 0.445 | 5,658 / 22,500 |
+| 5. Majors K30@8h — CROWD gate (subset of accepted) | 1,114 (67.8%) | +6,740 | +8,272 | +24.2 | [-17.7, +65.1] P>0=0.87 | 1.36 | 2.47 | -4,255 (21.27%) | 0.425 | 3,836 / 20,000 |
+| 6. Majors K30@8h — SMART gate (subset of accepted) | 981 (59.7%) | +6,692 | +8,040 | +27.3 | [-19.2, +72.4] P>0=0.89 | 1.42 | 2.59 | -4,239 (21.2%) | 0.445 | 3,378 / 20,000 |
+| 5b. Majors K30@8h — CROWD gate-pre-concurrency (burst-entangled) | 1,194 (72.7%) | +5,656 | +7,298 | +18.9 | [-21.9, +58.1] P>0=0.82 | 1.11 | 1.98 | -4,255 (18.91%) | 0.409 | 4,112 / 22,500 |
+| 6b. Majors K30@8h — SMART gate-pre-concurrency (burst-entangled) | 1,074 (65.4%) | +6,360 | +7,836 | +23.7 | [-18.3, +67.4] P>0=0.85 | 1.28 | 2.28 | -4,266 (21.33%) | 0.444 | 3,698 / 20,000 |
+| 7. COMBINED — SMART gate | 1,914 | +15,499 | +21,863 | +32.4 | [-8.1, +69.0] P>0=0.95 | 1.97 | 3.25 | -8,872 (8.87%) | 0.526 | 6,874 / 100,000 |
+
+Monthly net PnL, row 7 (COMBINED smart): 202511: -4,261; 202512: -1,788; 202601: +2,161; 202602: +1,341; 202603: +1,557; 202604: +10,027; 202605: +3,830; 202606: +2,631
+
+Majors book funnel (candidates -> skips; subset-gate rows have zero skips by construction): B_ungated: 5,494 cand, 3,851 concurrent-skip, 0 cap-skip; B_crowd: 1,114 cand, 0 concurrent-skip, 0 cap-skip; B_smart: 981 cand, 0 concurrent-skip, 0 cap-skip; B_crowd_preconc: 4,354 cand, 3,160 concurrent-skip, 0 cap-skip; B_smart_preconc: 3,972 cand, 2,898 concurrent-skip, 0 cap-skip
+
+Artifact: `data/derived/copy_cohort/gated_backtest_report.json`.

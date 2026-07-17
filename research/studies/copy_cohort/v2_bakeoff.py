@@ -10,13 +10,14 @@ Folds 202511-202606 are BURNED (reused): results rank paper-trader candidates, n
 from __future__ import annotations
 
 import json
+import sys
 
 import numpy as np
 
 from research.data.markout import REPO_ROOT
 from . import lake
-from .alt_fresh_validate import (FROZEN, N_BOOT, SEED, _forward_entries, _robust_mask,
-                                 _wallet_equal)
+from .alt_fresh_validate import (FROZEN, N_BOOT, SEED, _forward_entries, _np,
+                                 _pseudo_labels, _robust_mask, _wallet_equal)
 from .alt_select import _formation_months
 
 POOL = REPO_ROOT / "data" / "derived" / "copy_cohort" / "informedness"
@@ -150,13 +151,17 @@ def _select_fold(con, fold: int, excl: set[str]) -> tuple[dict[str, list[str]], 
 # ---------- forward inference (registered spec) ----------
 
 def _boot(mk, wallet, fold, rng):
-    """_cluster_boot semantics + one-sided p = (#draws<=0 + 1)/(n_valid + 1)."""
+    """_cluster_boot semantics + one-sided p = (#draws<=0 + 1)/(n_valid + 1).
+
+    AUDIT FIX 2026-07-17: pseudo-cluster tags preserve duplicate-pick multiplicity
+    (duplicates previously collapsed via np.unique -> variance understated)."""
     uw = np.unique(wallet)
     idx = {x: np.flatnonzero(wallet == x) for x in uw}
     stats = np.empty(N_BOOT)
     for b in range(N_BOOT):
-        rows = np.concatenate([idx[x] for x in rng.choice(uw, uw.size, replace=True)])
-        stats[b] = _wallet_equal(mk[rows], wallet[rows], fold[rows])[0]
+        pick = rng.choice(uw, uw.size, replace=True)
+        rows = np.concatenate([idx[x] for x in pick])
+        stats[b] = _wallet_equal(mk[rows], _pseudo_labels(pick, idx), fold[rows])[0]
     stats = stats[np.isfinite(stats)]
     return {"ci": [float(np.quantile(stats, .025)), float(np.quantile(stats, .975))],
             "p_gt0": float((stats > 0).mean()), "n_valid": int(stats.size),
@@ -210,15 +215,24 @@ def _bh(p: list[float]) -> list[float]:
     return adj.tolist()
 
 
-def run():
+def run(reuse_selections: bool = False):
     old133 = set(json.loads(FROZEN.read_text())["distinct_wallets"])
     con = lake.connect()
+
+    prev_sel = prev_meta = None
+    if reuse_selections and OUT.exists():
+        prev = json.loads(OUT.read_text())
+        prev_sel, prev_meta = prev["selections"], prev["fold_meta"]
+        print("[v2_bakeoff] reusing frozen selections from existing report", flush=True)
 
     cells = {m: {k: [] for k in ("mk", "wallet", "fold", "notl")} for m in METHODS}
     selections, fold_meta = {}, {}
     for fold in FOLDS:
-        print(f"[v2_bakeoff] fold {fold}: selecting ...", flush=True)
-        sel, meta = _select_fold(con, fold, old133)
+        if prev_sel is not None:
+            sel, meta = prev_sel[str(fold)], prev_meta[str(fold)]
+        else:
+            print(f"[v2_bakeoff] fold {fold}: selecting ...", flush=True)
+            sel, meta = _select_fold(con, fold, old133)
         selections[str(fold)] = sel
         fold_meta[str(fold)] = meta
         union = sorted({x for v in sel.values() for x in v})
@@ -227,7 +241,7 @@ def run():
             print(f"  fold {fold}: no ctx, skipped", flush=True)
             continue
         w = d["wallet"].astype(str)
-        mk = np.asarray(d["mk"], float)
+        mk = _np(d["mk"])            # masked->NaN guard (audit 2026-07-17)
         ok = np.isfinite(mk)
         for meth in METHODS:
             mem = set(sel[meth])
@@ -235,7 +249,7 @@ def run():
             cells[meth]["mk"].append(mk[m])
             cells[meth]["wallet"].append(w[m])
             cells[meth]["fold"].append(np.full(int(m.sum()), fold))
-            cells[meth]["notl"].append(np.asarray(d["notl"], float)[m])
+            cells[meth]["notl"].append(_np(d["notl"])[m])
         print(f"  fold {fold}: union {len(union)} wallets, {int(ok.sum())} priced entries "
               f"| overlap-with-t_v1 {meta['overlap_with_t_v1']}", flush=True)
 
@@ -244,7 +258,10 @@ def run():
            "config": {"folds": FOLDS, "top_k": TOP_K, "z_thr": Z_THR, "cap": CAP,
                       "prefilter": PREFILTER, "notl_min": NOTL_MIN, "seed": SEED,
                       "n_boot": N_BOOT, "exclusion": "frozen-133 removed pre-ranking",
-                      "robust_spec": "winsor p95 |mk|, wallet-folds >= 3, wallet-equal"},
+                      "robust_spec": "winsor p95 |mk|, wallet-folds >= 3, wallet-equal",
+                      "code_commit": lake.git_describe(),
+                      "audit_2026_07_17": "multiplicity-preserving cluster boot; "
+                                          "masked->NaN markout guard"},
            "fold_meta": fold_meta, "selections": selections, "methods": {}}
 
     p_one = {}
@@ -284,4 +301,4 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    run(reuse_selections="--reuse-selections" in sys.argv[1:])

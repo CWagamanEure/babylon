@@ -7,6 +7,7 @@ prefix and are never swept by data globs.
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import duckdb
@@ -40,6 +41,16 @@ def connect(mem: str = "6GB", threads: int = 4) -> duckdb.DuckDBPyConnection:
     con.execute(f"""CREATE SECRET lake (TYPE S3, KEY_ID '{k}', SECRET '{s}',
                     ENDPOINT '{ENDPOINT}', REGION 'nyc3')""")
     return con
+
+
+def git_describe() -> str:
+    """`git describe --always --dirty` provenance stamp for emitted reports."""
+    try:
+        return subprocess.run(["git", "describe", "--always", "--dirty"],
+                              capture_output=True, text=True,
+                              cwd=Path(__file__).resolve().parents[3]).stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
 
 
 def month_dates(month: int) -> str:

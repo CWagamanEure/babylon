@@ -107,8 +107,13 @@ def build_fold(con, fold: int) -> dict:
     p_inf = tg["p_informed"]
 
     def top(key, tie=None):
-        order = np.lexsort((-tie, -key)) if tie is not None else np.argsort(-key)
-        return order[:TOP_K]
+        # AUDIT FIX 2026-07-17 (MED): total deterministic ordering for ALL arms — primary
+        # key desc, then tie desc, then wallet asc as the final tie-break (previously
+        # argsort left key-ties in arbitrary order). PROSPECTIVE ONLY: the frozen
+        # alt_universe_cohorts.json was generated pre-fix and is NOT re-run; this governs
+        # future selections.
+        keys = (w,) + ((-tie,) if tie is not None else ()) + (-key,)
+        return np.lexsort(keys)[:TOP_K]
 
     arms = {"C": top(metric_c), "T": top(t), "P": top(p_inf, tie=t)}
     sel_wallets = sorted({w[i] for idx in arms.values() for i in idx})

@@ -251,8 +251,39 @@ def load_book_b(con):
 
 
 # ------------------------------------------------------------------ cell inference
-def cell_stats(gross, net, wallet, seed):
-    """n, entry-equal net, wallet-equal winsorized gross + 1000-rep wallet boot CI."""
+DAY_MS = 86_400_000
+
+
+def _coinday(coin, ts):
+    """(coin × calendar-day) cluster labels + inverse index."""
+    day = (np.asarray(ts, np.int64) // DAY_MS).astype("U16")
+    key = np.char.add(np.char.add(coin.astype(str), "|"), day)
+    return np.unique(key, return_inverse=True)
+
+
+def _quant(boot):
+    boot = boot[np.isfinite(boot)]
+    if boot.size == 0:
+        return None
+    return [round(float(np.quantile(boot, .025)), 2), round(float(np.quantile(boot, .975)), 2)]
+
+
+def _wider(ci_a, ci_b):
+    """Pick the wider of two CIs (audit 2026-07-17: quote the conservative cluster unit)."""
+    if ci_a is None:
+        return ci_b, "coinday"
+    if ci_b is None:
+        return ci_a, "wallet"
+    return (ci_a, "wallet") if (ci_a[1] - ci_a[0]) >= (ci_b[1] - ci_b[0]) else (ci_b, "coinday")
+
+
+def cell_stats(gross, net, wallet, coin, ts, seed):
+    """n, entry-equal net, wallet-equal winsorized gross + TWO cluster boot CIs.
+
+    AUDIT FIX 2026-07-17: consensus cells share coin-time shocks across wallets, so a
+    wallet-only cluster CI understates dependence. Report BOTH the wallet-cluster CI and a
+    (coin × calendar-day)-cluster CI (multiplicity-weighted, ksweep pattern); ci95 = the
+    WIDER of the two (binding)."""
     n = int(gross.size)
     out = {"n": n}
     if n == 0:
@@ -266,40 +297,88 @@ def cell_stats(gross, net, wallet, seed):
     wmean = s / c
     out["n_wallets"] = int(uw.size)
     out["gross_bp_wallet_equal_winsor"] = round(float(wmean.mean()), 2)
+    ci_w = None
     if uw.size >= 2:
         rng = np.random.default_rng(seed)
         idx = rng.integers(0, uw.size, size=(N_BOOT, uw.size))
-        boot = wmean[idx].mean(axis=1)
-        out["ci95"] = [round(float(np.quantile(boot, .025)), 2),
-                       round(float(np.quantile(boot, .975)), 2)]
-    else:
-        out["ci95"] = None
+        ci_w = _quant(wmean[idx].mean(axis=1))
+    # (coin × day)-cluster boot of the SAME statistic: cluster weights -> entry weights ->
+    # weighted per-wallet means -> mean over wallets with weight (multiplicity-preserving)
+    ug, ginv = _coinday(coin, ts)
+    ci_cd = None
+    out["n_coinday_clusters"] = int(ug.size)
+    if ug.size >= 2:
+        rng2 = np.random.default_rng(seed + 500_000)
+        boot = np.empty(N_BOOT)
+        for b in range(N_BOOT):
+            mult = np.bincount(rng2.integers(0, ug.size, ug.size), minlength=ug.size).astype(float)
+            ew = mult[ginv]
+            ws = np.bincount(inv, weights=gw * ew)
+            wc = np.bincount(inv, weights=ew)
+            live = wc > 0
+            boot[b] = float((ws[live] / wc[live]).mean()) if live.any() else np.nan
+        ci_cd = _quant(boot)
+    out["ci95_wallet"], out["ci95_coinday"] = ci_w, ci_cd
+    out["ci95"], out["ci95_binding"] = _wider(ci_w, ci_cd)
     return out
 
 
-def gap_ci(gross_a, wal_a, gross_b, wal_b, seed):
-    """crowd-vs-solo gap on wallet-equal winsorized gross; wallet-cluster boot (union frame)."""
+def gap_ci(gross_a, wal_a, coin_a, ts_a, gross_b, wal_b, coin_b, ts_b, seed):
+    """crowd-vs-solo gap on wallet-equal winsorized gross; TWO cluster boots
+    (audit 2026-07-17): wallet-cluster (union frame, as before) AND (coin × calendar-day)-
+    cluster resampled JOINTLY across both cells; ci95 = the WIDER."""
     if gross_a.size == 0 or gross_b.size == 0:
         return None
 
-    def wmeans(g, w):
+    def winsor(g):
         lim = float(np.percentile(np.abs(g), 95))
-        gw = np.clip(g, -lim, lim)
+        return np.clip(g, -lim, lim)
+
+    gwa, gwb = winsor(gross_a), winsor(gross_b)
+
+    def wmeans(gw, w):
         uw, inv = np.unique(w, return_inverse=True)
         return dict(zip(uw.tolist(), (np.bincount(inv, weights=gw) / np.bincount(inv)).tolist()))
 
-    ma, mb = wmeans(gross_a, wal_a), wmeans(gross_b, wal_b)
+    ma, mb = wmeans(gwa, wal_a), wmeans(gwb, wal_b)
     union = sorted(set(ma) | set(mb))
     va = np.array([ma.get(w, np.nan) for w in union])
     vb = np.array([mb.get(w, np.nan) for w in union])
     rng = np.random.default_rng(seed)
     idx = rng.integers(0, len(union), size=(N_BOOT, len(union)))
     boots = np.nanmean(va[idx], axis=1) - np.nanmean(vb[idx], axis=1)
-    boots = boots[np.isfinite(boots)]
+    ci_w = _quant(boots)
     point = float(np.nanmean(va) - np.nanmean(vb))
-    return {"gap_bp": round(point, 2),
-            "ci95": [round(float(np.quantile(boots, .025)), 2),
-                     round(float(np.quantile(boots, .975)), 2)]}
+    # joint (coin × day)-cluster boot over the union of both cells' clusters
+    daya = (np.asarray(ts_a, np.int64) // DAY_MS).astype("U16")
+    dayb = (np.asarray(ts_b, np.int64) // DAY_MS).astype("U16")
+    ka = np.char.add(np.char.add(coin_a.astype(str), "|"), daya)
+    kb = np.char.add(np.char.add(coin_b.astype(str), "|"), dayb)
+    ug, ginv = np.unique(np.concatenate([ka, kb]), return_inverse=True)
+    ga, gb = ginv[:ka.size], ginv[ka.size:]
+    uwa, inva = np.unique(wal_a, return_inverse=True)
+    uwb, invb = np.unique(wal_b, return_inverse=True)
+    ci_cd = None
+    if ug.size >= 2:
+        rng2 = np.random.default_rng(seed + 500_000)
+        boot = np.empty(N_BOOT)
+        for b in range(N_BOOT):
+            mult = np.bincount(rng2.integers(0, ug.size, ug.size), minlength=ug.size).astype(float)
+
+            def cell_mean(gw, invx, gx, nw):
+                ew = mult[gx]
+                ws = np.bincount(invx, weights=gw * ew, minlength=nw)
+                wc = np.bincount(invx, weights=ew, minlength=nw)
+                live = wc > 0
+                return float((ws[live] / wc[live]).mean()) if live.any() else np.nan
+
+            boot[b] = (cell_mean(gwa, inva, ga, uwa.size)
+                       - cell_mean(gwb, invb, gb, uwb.size))
+        ci_cd = _quant(boot)
+    ci, binding = _wider(ci_w, ci_cd)
+    return {"gap_bp": round(point, 2), "ci95": ci, "ci95_binding": binding,
+            "ci95_wallet": ci_w, "ci95_coinday": ci_cd,
+            "n_coinday_clusters": int(ug.size)}
 
 
 # ------------------------------------------------------------------ main
@@ -340,7 +419,7 @@ def run():
             for name in LEVELS:
                 m = lv[name]
                 cs = cell_stats(ent["gross_bp"][m], ent["net_bp"][m], ent["wallet"][m],
-                                SEED + cell_idx)
+                                ent["coin"][m], ent["ts"][m], SEED + cell_idx)
                 cs["pct_entries"] = round(float(m.mean()) * 100, 1)
                 row[name] = cs
                 cell_idx += 1
@@ -352,19 +431,23 @@ def run():
                           else bool(g[0] < g[1] < g[2]))}
             sec["crowd_vs_solo"][wk] = gap_ci(
                 ent["gross_bp"][lv["crowd"]], ent["wallet"][lv["crowd"]],
+                ent["coin"][lv["crowd"]], ent["ts"][lv["crowd"]],
                 ent["gross_bp"][lv["solo"]], ent["wallet"][lv["solo"]],
+                ent["coin"][lv["solo"]], ent["ts"][lv["solo"]],
                 SEED + 100 + cell_idx)
         lvt = {"solo": nTop == 0, "pair": nTop == 1, "crowd": nTop >= 2}
         for name in LEVELS:
             m = lvt[name]
             cs = cell_stats(ent["gross_bp"][m], ent["net_bp"][m], ent["wallet"][m],
-                            SEED + cell_idx)
+                            ent["coin"][m], ent["ts"][m], SEED + cell_idx)
             cs["pct_entries"] = round(float(m.mean()) * 100, 1)
             sec["variant_6h_tophalf"][name] = cs
             cell_idx += 1
         sec["variant_crowd_vs_solo"] = gap_ci(
             ent["gross_bp"][lvt["crowd"]], ent["wallet"][lvt["crowd"]],
+            ent["coin"][lvt["crowd"]], ent["ts"][lvt["crowd"]],
             ent["gross_bp"][lvt["solo"]], ent["wallet"][lvt["solo"]],
+            ent["coin"][lvt["solo"]], ent["ts"][lvt["solo"]],
             SEED + 100 + cell_idx)
         books[bk] = sec
 
@@ -378,8 +461,11 @@ def run():
                       "book_b": f"majors-native rk<{K_M}, finite mk8, net = mk8 - {COST_M_BP}bp; "
                                 "dir from lake open_entries join; counting pool = K30 majors opens",
                       "cell_metric": "winsor p95 |gross| within cell -> per-wallet mean -> "
-                                     "wallet-equal mean; 1000-rep wallet boot percentile CI",
+                                     "wallet-equal mean; 1000-rep cluster boot percentile CIs: "
+                                     "wallet AND (coin x calendar-day); ci95 = wider (binding)",
                       "n_boot": N_BOOT, "seed": SEED,
+                      "code_commit": lake.git_describe(),
+                      "audit_2026_07_17": "two-way cluster CIs (wallet + coin-day), wider quoted",
                       "reconciliation": recon, "a_bots_per_fold": n_bot,
                       "a_bot_units_dropped": n_dropped_units,
                       "b_ambiguous_dir_dropped": n_amb},
@@ -391,13 +477,16 @@ def run():
 
 
 def append_md(rep):
-    lines = ["\n## CONSENSUS CONDITIONING — RESULTS (computed after the stamp above)\n"]
+    lines = ["\n## CONSENSUS CONDITIONING — RESULTS (computed after the stamp above)\n",
+             "*2026-07-17 audit re-print: every boot CI below is the WIDER of the wallet-cluster "
+             "and (coin × calendar-day)-cluster CI (both stored in the JSON artifact); "
+             f"code_commit {rep['config']['code_commit']}.*\n"]
     for bk, title in (("A", "PYRAMID-ALT (v1.1-screened units, cost 21.5bp)"),
                       ("B", "MAJORS-NATIVE K30 @8h (cost 5.5bp)")):
         b = rep["books"][bk]
         lines.append(f"\n### Book {bk} — {title} ({b['n_book_entries']:,} entries)\n")
         lines.append("| W | level | n | % | net bp (entry-eq) | gross bp (wallet-eq winsor) "
-                     "| boot CI95 | wallets |\n|---|---|---|---|---|---|---|---|")
+                     "| boot CI95 (binding cluster) | wallets |\n|---|---|---|---|---|---|---|---|")
         for wk, _ in WINDOWS:
             for name in LEVELS:
                 c = b["grid"][wk][name]
@@ -405,7 +494,8 @@ def append_md(rep):
                     lines.append(f"| {wk} | {name} | 0 | 0.0% | — | — | — | — |")
                     continue
                 ci = c["ci95"]
-                cis = f"[{ci[0]:+.1f}, {ci[1]:+.1f}]" if ci else "—"
+                cis = (f"[{ci[0]:+.1f}, {ci[1]:+.1f}] ({c.get('ci95_binding', '?')})"
+                       if ci else "—")
                 lines.append(f"| {wk} | {name} | {c['n']:,} | {c['pct_entries']}% | "
                              f"{c['net_bp_entry_equal']:+.1f} | "
                              f"{c['gross_bp_wallet_equal_winsor']:+.1f} | {cis} | "
@@ -417,13 +507,13 @@ def append_md(rep):
         lines.append("\nMonotonicity (wallet-eq winsor gross, solo->pair->crowd): " + "; ".join(
             f"{wk}: {b['monotonicity'][wk]['solo_pair_crowd_bp']} rises={b['monotonicity'][wk]['rises']}"
             for wk, _ in WINDOWS))
-        lines.append("\nCrowd-vs-solo gap (wallet-boot CI95): " + "; ".join(
-            f"{wk}: {b['crowd_vs_solo'][wk]['gap_bp']:+.1f} "
-            f"[{b['crowd_vs_solo'][wk]['ci95'][0]:+.1f}, {b['crowd_vs_solo'][wk]['ci95'][1]:+.1f}]"
+        def _gap(g):
+            return (f"{g['gap_bp']:+.1f} [{g['ci95'][0]:+.1f}, {g['ci95'][1]:+.1f}] "
+                    f"({g.get('ci95_binding', '?')})")
+        lines.append("\nCrowd-vs-solo gap (binding cluster boot CI95): " + "; ".join(
+            f"{wk}: {_gap(b['crowd_vs_solo'][wk])}"
             if b["crowd_vs_solo"][wk] else f"{wk}: n/a" for wk, _ in WINDOWS) +
-            (f"; 6h-topT variant: {b['variant_crowd_vs_solo']['gap_bp']:+.1f} "
-             f"[{b['variant_crowd_vs_solo']['ci95'][0]:+.1f}, "
-             f"{b['variant_crowd_vs_solo']['ci95'][1]:+.1f}]"
+            (f"; 6h-topT variant: {_gap(b['variant_crowd_vs_solo'])}"
              if b.get("variant_crowd_vs_solo") else ""))
         lines.append("")
     lines.append("\nArtifact: `data/derived/copy_cohort/consensus_report.json`.\n")

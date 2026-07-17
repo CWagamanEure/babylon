@@ -127,6 +127,14 @@ redesign-for-power.**
 
 ## 2026-07-12 — FORWARD RUN + verdict: markout-selection INCONCLUSIVE; realized-PnL-selection = AMBER live positive
 
+> **CORRECTION (2026-07-17 audit, code fixed, NOT re-run):** `walkforward._wallet_equal_bootstrap_ci`'s
+> wallet-resample leg collapsed duplicate wallet draws (see "AUDIT-FIX RE-PRINT" at the ledger's end);
+> synthetic probe shows its nominal-95% wallet-only CIs cover only ~84%. The wallet-only legs below
+> (e.g. Arm B [13.1, 36.0]) are UNDERSTATED (~30% too narrow). The Arm B binding CI quoted here was the
+> WEEK-BLOCK leg ([1.87, 36.60]), whose resample was not affected by the collapse bug, so the AMBER
+> verdict stands, but a widened wallet leg could make wallet-only binding on a re-run — treat the exact
+> CI edges as stale until walkforward is re-run with the fixed code.
+
 User elected to run the forward walk-forward despite the power-gate STOP (the gate tests 5bp-margin
 power; the study's claim is cohort-existence, and the smoke showed a positive that stopping would
 suppress — the over-null hazard). Ran 5-fold matched-placebo WF, then BOTH mandatory adversarial
@@ -622,7 +630,9 @@ CONSTRUCTION_PREREG.md. Interim: the z-band "rising star" refinement (TSPLIT_HYP
 semi-fresh probe BEFORE these ran — zband on unseen wallets −0.5bp CI[−29.8,+28.1], upper bound excludes the
 hypothesized +49 (powered negative for that effect; winner's-curse within the labeled 130). zband_semifresh.py.
 
-**1. V2 bakeoff (6 selector arms, v2_bakeoff.py):** t_v1 +27.6 [+0.7,+53.1] 7/8 folds and t_noliq +27.4
+**1. V2 bakeoff (6 selector arms, v2_bakeoff.py):** *(2026-07-17 audit correction: these CIs were
+bootstrap-understated; corrected t_v1 [−4.4,+65.4] / t_noliq [−3.2,+60.1] both SPAN 0, BH .148 — see
+AUDIT-FIX RE-PRINT; the ≥$250 strata still exclude 0.)* t_v1 +27.6 [+0.7,+53.1] 7/8 folds and t_noliq +27.4
 [+2.6,+51.1] 8/8 (≈90% cohort overlap; the liq screen dodges the bad fold) lead; zband +15.6, notional-floor
 +13.0, winsor_t +5.9, sign_stat +5.1 all span 0. Min BH-adj p=0.070 → still AMBER. ≥$250 stratum stronger for
 both leaders (CIs excl 0, same taint). SELECTION IS AT ITS CEILING — no alternative ranking beats plain t.
@@ -800,8 +810,9 @@ consensus_conditioning.py / consensus_report.json / WALLET_ATTRIBUTION.md §cons
 20 dependent cells, grid stamped before outcomes). Entry-equal NET: crowd (≥2 others, same coin+dir, trailing
 W) positive in ALL 6 (book,W) cells (A +92/+60/+42; B +37/+33/+31) while solo ≈0-to-negative everywhere —
 both books' entire net profit sits in crowd entries. Strict pre-set rule (CI-clear + all-window consistent):
-NOTHING qualifies. CI-clearing cells (2/20, uncorrected): B/1h/crowd +54.7 [+15,+101]; TOP-HALF-T consensus —
-B gap +121 [+32,+203], A crowd +98.7 [+46,+155] — replicates the sparse majors "consensus rescues" lean in
+NOTHING qualifies. CI-clearing cells (2/20, uncorrected): B/1h/crowd +54.7 [+15,+101] *(2026-07-17: FLIPS
+to spanning 0 under the binding coin-day cluster CI [−10.2,+106.1] — see AUDIT-FIX RE-PRINT)*; TOP-HALF-T
+consensus — B gap +121 [+32,+203], A crowd +98.7 [+46,+155] *(both survive coin-day clustering)* — replicates the sparse majors "consensus rescues" lean in
 both books. Volume at crowd: B 57-79%, A 22-47% (deployable gate, not thin). REGISTERED FORWARD VARIANT:
 consensus-gate arm (skip solo entries; smart-money variant = top-half-t pool, W=6h) on both paper books.
 Hypothesis-grade until forward data.
@@ -815,3 +826,73 @@ CI [−7.2,+69.8] (includes 0). Gate halves turnover, ~doubles per-trade net, do
 202604 = 65% of profit. Per-book: pyramid crowd SR 1.45 (+$11.1k, +35.9bp); majors smart SR 1.28 (+$6.4k,
 +23.7bp). FORWARD MUST CONFIRM: gated−ungated gap ~+15-20bp; smart>crowd>solo ordering; SR>1 sans single-
 month dependence. This is the paper-trader target spec; burned-fold work concludes here.
+
+### 2026-07-17 — AUDIT-FIX RE-PRINT (cluster-bootstrap multiplicity + NULL-markout guard + gate ordering + two-way CIs)
+
+Six audit fixes implemented on top of snapshot 1535c74 and every affected report re-run (all re-emitted
+reports stamp `code_commit: 1535c74-dirty`). Fixes: (1) **CRITICAL — cluster bootstrap collapsed duplicate
+wallet draws** (resample concatenated duplicate picks but the statistic keyed wallet|fold via np.unique →
+duplicates merged → variance understated). Fixed with multiplicity-preserving pseudo-cluster tags
+(`wallet#j` per draw), verified ≡ the ksweep weighted pattern to 1.4e-14; synthetic probe (60 wallets,
+known random effect): 95%-CI coverage 0.844 (old) → **0.952 (fixed)**, mean CI halfwidth +~30%. Affected:
+alt_fresh_validate `_cluster_boot`/`_paired_delta_boot`, v2_bakeoff `_boot`, capday_alt_validate
+`_paired_h2`/`_h1_bootstrap`, walkforward `_wallet_equal_bootstrap_ci` (wallet leg). ksweep/majors_native
+cell boots were ALREADY correct (weighted). (2) **NULL-markout guard**: bare `np.asarray` on duckdb
+fetchnumpy masked columns exposed fill garbage as finite markouts; ported construction_study's
+masked→NaN `_np()` into alt_fresh_validate/ksweep/majors_native/v2_bakeoff. Real effect: majors_native n
+was a constant 5,655/12,264 across ALL horizons pre-fix (leaked NULLs), now falls with horizon as it must
+(K30: 5,614@1h → 5,250@48h). (3) **median-perm permuted entries, not wallets** → rebuilt as wallet-label
+permutation (whole wallets move between arms). (4) **gated_backtest ordering**: concurrency/dedup now runs
+FIRST, gate = pure subset of accepted entries (the 'same entries' prose was false for book B pre-fix);
+old ordering kept as labeled 'gate-pre-concurrency (burst-entangled)' rows; BACKTEST.md re-emitted with
+corrected prose. (5) **consensus CIs two-way**: every cell/gap now reports wallet-cluster AND
+(coin × calendar-day)-cluster boot CIs; the WIDER is quoted (gated_backtest already day-block — no change
+needed there). (6) alt_select `top()` → total deterministic ordering (key desc, tie desc, wallet asc) —
+prospective only, frozen cohorts JSON untouched. Reconciliation anchors still tie (pyramid re-sim 3,668
+units / $232.87 vs attribution $232.89 in both re-runs). walkforward.py code fixed but NOT re-run — its
+2026-07-12 report's `wallet_equal_ci.wallet_only` legs are understated per the probe (nominal 95% ≈ 84%
+actual); treat its week_block/two-way CGM numbers as the binding ones until a re-run.
+
+**BEFORE → AFTER (all changed headline numbers; robust wallet-equal bp unless noted):**
+
+| study / cell | old (pre-fix) | corrected | verdict change |
+|---|---|---|---|
+| alt_fresh arm C H1 | −6.9 [−127.0,+84.1] | −6.9 [−145.2,+121.3] | none (spans 0) |
+| alt_fresh arm T H1 | +24.5 [−3.0,+51.2] P=.96 | +24.6 [−9.2,+62.1] P=.93 | none (underpowered positive, wider) |
+| alt_fresh arm P H1 | −14.2 [−36.8,+6.1] P(>0)=.10 | −13.9 [−42.6,+13.9] P(>0)=.17 | negative lean SOFTENS |
+| alt_fresh H2 scale Δ (C) | −4.8 [−181,+177]; med-perm p=.017 | −4.3 [−214,+194]; wallet-perm p=.243 | med-perm "signal" GONE (entry-perm artifact) |
+| alt_fresh H2 Δ (T) med-perm | p=.0006 | p=.100 | FLIPS to non-significant |
+| alt_fresh T−C / P−C | +32.1 [−78,+161] / −5.0 [−113,+121] | +32.7 [−111,+180] / −4.6 [−152,+143] | none (span 0) |
+| v2 bakeoff t_v1 | +27.6 [+0.7,+53.1] BH=.070 | +27.8 [−4.4,+65.4] BH=.148 | **CI FLIPS to spanning 0** |
+| v2 bakeoff t_noliq | +27.4 [+2.6,+51.1] BH=.070 | +27.5 [−3.2,+60.1] BH=.148 | **CI FLIPS to spanning 0** |
+| v2 t_v1 / t_noliq ≥$250 stratum | +50.3 / +39.6 (excl 0) | +50.3 [+3.7,+104.0] / +39.6 [+5.9,+80.9] | still exclude 0 (only surviving excl-0 v2 cells) |
+| majors_native K30/8h | +28.1 [+4.0,+54.8] n=5,655 | **+29.0 [+4.9,+55.6]** n=5,494 | survives (marginally stronger) |
+| majors_native K30/48h | +8.4 [−45.6,+64.6] | **+19.0 [−40.1,+75.7]** n=5,250 | point ↑ (NULL-leak was diluting); spans 0 |
+| majors_native K100/8h / K100/48h | +7.3 [−4.5,+19.4] / +7.7 [−21.2,+36.2] | +7.5 [−4.3,+19.5] / +14.1 [−17.4,+46.2] | none (span 0) |
+| ksweep K100/LIQUID_ALT | +15.3 [+3.6,+28.6] | +15.7 [+4.0,+29.1] n=4,881 | survives (boot was already correct; NaN-guard only) |
+| ksweep K50/MAJORS | −4.8 [−12.3,+1.5] P(>0)=.077 | −4.3 [−12.1,+2.4] P(>0)=.113 | negative lean softens |
+| capday_alt H1 large boot | [+22.7,+347.4] P=.99 | +196.9 [+7.8,+495.0] P=.98 | survives, CI much wider |
+| capday_alt H2 large−small | +125.7 [−113,+363] | +126.0 [−219,+475] | none (spans 0, wider) |
+| consensus B/1h/crowd | +54.7 [+15.1,+101.2] (CI-clearing cell) | wal [+15.1,+101.2] / coin-day [−10.2,+106.1] → binding coin-day | **FLIPS to spanning 0** (was 1 of the 2 uncorrected CI-clearing grid cells) |
+| consensus B topT gap (smart) | +121.1 [+31.6,+203.0] | wal [+31.6,+203.0] / coin-day [+32.1,+160.1] | survives BOTH cluster units |
+| consensus A topT crowd | +98.7 [+46.0,+154.8] | wal [+46.0,+154.8] / coin-day [+21.7,+171.6] | survives BOTH cluster units |
+| consensus B/6h/pair | −60.8 [−128.2,−1.8] | wal [−128.2,−1.8] / coin-day [−93.7,+3.3] (binding wal) | quoted CI still excl 0; coin-day view spans |
+| gated B_crowd | +18.9bp SR 1.11 (burst-entangled) | **subset-gate +24.2bp SR 1.36** (preconc row: +18.9/1.11) | subset ordering HELPS (+5.3bp, n 1,194→1,114) |
+| gated B_smart | +23.7bp SR 1.28 | **subset-gate +27.3bp SR 1.42** (preconc: +23.7/1.28) | subset ordering HELPS (+3.6bp, n 1,074→981) |
+| gated COMBINED_smart | +$15,167 / +30.2bp / SR 1.89 CI[−7.2,+69.8] | **+$15,499 / +32.4bp / SR 1.97 CI[−8.1,+69.0]** | still spans 0; still ex-post-conditioned |
+
+**Net read-through:** (a) the v2 bakeoff full-sample "CIs excl 0" for t_v1/t_noliq were a bootstrap
+artifact — both leaders are now underpowered positives (points unchanged ~+28, one-sided p .04–.05,
+BH .148); the ≥$250 strata are the only v2 cells whose corrected CIs exclude 0. (b) The alt_fresh
+median-perm p-values (the strongest-looking H2 numbers) were entry-permutation artifacts and are gone.
+(c) The majors 8h cell — the forward slate's anchor — SURVIVES the corrected inference at both K
+(K30/8h +29.0 [+4.9,+55.6]) and got slightly stronger after the NULL-leak fix; K100 liquid-alt also
+survives. (d) Of the consensus grid's two uncorrected CI-clearing cells, B/1h/crowd dies under coin-day
+clustering; the top-half-t (smart-money) results survive both cluster units in both books — the forward
+smart-gate spec is unchanged. (e) The subset-ordered gate is BETTER than the burst-entangled one
+(+3.6–5.3bp/trade, SR 1.36–1.42 vs 1.11–1.28), so the old gated rows UNDERSTATED the gate — but the
+combined book's day-block CI still includes 0 and remains non-evidence (ex-post gate). Arm T, capday-alt
+directional replication, and all other standing verdicts are unchanged in direction, with honestly wider
+CIs. Artifacts: alt_fresh_validation_report.json, v2_bakeoff_report.json (selections frozen, re-inferred),
+majors_native_report.json, ksweep_report.json, capday_alt_validation_report.json, consensus_report.json
+(+WALLET_ATTRIBUTION.md re-print), gated_backtest_report.json (+BACKTEST.md re-print).

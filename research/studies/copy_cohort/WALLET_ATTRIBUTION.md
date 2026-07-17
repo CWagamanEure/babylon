@@ -418,3 +418,50 @@ Crowd-vs-solo gap (wallet-boot CI95): 1h: +56.3 [-6.8, +124.4]; 6h: +53.8 [-21.1
 
 
 Artifact: `data/derived/copy_cohort/consensus_report.json`.
+
+## CONSENSUS CONDITIONING — RESULTS (computed after the stamp above)
+
+*2026-07-17 audit re-print: every boot CI below is the WIDER of the wallet-cluster and (coin × calendar-day)-cluster CI (both stored in the JSON artifact); code_commit 1535c74-dirty.*
+
+
+### Book A — PYRAMID-ALT (v1.1-screened units, cost 21.5bp) (2,319 entries)
+
+| W | level | n | % | net bp (entry-eq) | gross bp (wallet-eq winsor) | boot CI95 (binding cluster) | wallets |
+|---|---|---|---|---|---|---|---|
+| 1h | solo | 1,497 | 64.6% | -8.6 | +26.2 | [-37.1, +93.9] (wallet) | 72 |
+| 1h | pair | 306 | 13.2% | +10.5 | +71.0 | [-30.0, +166.1] (wallet) | 51 |
+| 1h | crowd | 516 | 22.3% | +92.2 | +12.1 | [-63.4, +152.1] (coinday) | 49 |
+| 6h | solo | 1,087 | 46.9% | -5.8 | +1.5 | [-69.0, +62.4] (wallet) | 53 |
+| 6h | pair | 478 | 20.6% | -1.8 | +67.4 | [-26.2, +157.4] (wallet) | 57 |
+| 6h | crowd | 754 | 32.5% | +59.8 | +31.8 | [-25.1, +131.5] (coinday) | 64 |
+| 24h | solo | 716 | 30.9% | -19.8 | +19.8 | [-40.1, +83.2] (wallet) | 42 |
+| 24h | pair | 524 | 22.6% | +12.9 | +26.4 | [-53.6, +109.0] (wallet) | 46 |
+| 24h | crowd | 1,079 | 46.5% | +42.0 | +33.1 | [-47.1, +108.8] (wallet) | 77 |
+| 6h-topT | solo: n=1386, 27.34bp / pair: n=349, 26.98bp / crowd: n=584, 98.68bp | | | | | | |
+
+Monotonicity (wallet-eq winsor gross, solo->pair->crowd): 1h: [26.22, 71.05, 12.05] rises=False; 6h: [1.49, 67.36, 31.81] rises=False; 24h: [19.79, 26.39, 33.15] rises=True
+
+Crowd-vs-solo gap (binding cluster boot CI95): 1h: -14.2 [-92.5, +132.1] (coinday); 6h: +30.3 [-65.2, +135.6] (wallet); 24h: +13.4 [-84.8, +120.3] (wallet); 6h-topT variant: +71.3 [-28.9, +170.4] (coinday)
+
+
+### Book B — MAJORS-NATIVE K30 @8h (cost 5.5bp) (5,494 entries)
+
+| W | level | n | % | net bp (entry-eq) | gross bp (wallet-eq winsor) | boot CI95 (binding cluster) | wallets |
+|---|---|---|---|---|---|---|---|
+| 1h | solo | 1,783 | 32.5% | -0.1 | -1.6 | [-43.4, +39.8] (wallet) | 50 |
+| 1h | pair | 595 | 10.8% | -9.1 | +9.4 | [-65.2, +75.7] (wallet) | 32 |
+| 1h | crowd | 3,116 | 56.7% | +37.3 | +54.7 | [-10.2, +106.1] (coinday) | 26 |
+| 6h | solo | 1,140 | 20.7% | -9.8 | -27.8 | [-76.1, +12.1] (wallet) | 41 |
+| 6h | pair | 403 | 7.3% | -21.2 | -60.8 | [-128.2, -1.8] (wallet) | 34 |
+| 6h | crowd | 3,951 | 71.9% | +33.0 | +26.1 | [-40.7, +83.0] (wallet) | 33 |
+| 24h | solo | 743 | 13.5% | -4.4 | +0.6 | [-54.9, +52.0] (wallet) | 33 |
+| 24h | pair | 423 | 7.7% | -47.6 | -74.5 | [-138.4, -18.5] (wallet) | 32 |
+| 24h | crowd | 4,328 | 78.8% | +31.0 | +9.8 | [-36.9, +54.4] (wallet) | 39 |
+| 6h-topT | solo: n=1522, -62.26bp / pair: n=944, 16.11bp / crowd: n=3028, 58.84bp | | | | | | |
+
+Monotonicity (wallet-eq winsor gross, solo->pair->crowd): 1h: [-1.55, 9.38, 54.72] rises=True; 6h: [-27.78, -60.79, 26.05] rises=False; 24h: [0.6, -74.47, 9.8] rises=False
+
+Crowd-vs-solo gap (binding cluster boot CI95): 1h: +56.3 [-6.8, +124.4] (wallet); 6h: +53.8 [-21.1, +127.8] (wallet); 24h: +9.2 [-59.8, +76.1] (wallet); 6h-topT variant: +121.1 [+31.6, +203.0] (wallet)
+
+
+Artifact: `data/derived/copy_cohort/consensus_report.json`.

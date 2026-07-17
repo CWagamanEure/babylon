@@ -240,10 +240,17 @@ def _wallet_equal_bootstrap_ci(y: np.ndarray, w: np.ndarray, wk: np.ndarray, see
 
     point = wallet_equal(np.arange(y.size))
     a = (1 - level) / 2
+    # AUDIT FIX 2026-07-17 (multiplicity-preserving wallet resample): the old code
+    # concatenated duplicate wallet picks and re-grouped by wallet id, so duplicates
+    # collapsed to one cluster and the bootstrap variance was understated. The wallet-equal
+    # mean under a resample with multiplicities m is the m-weighted mean of the per-wallet
+    # means (ksweep weighted pattern). NOTE: code fixed 2026-07-17 but NOT re-run; the
+    # 07-12 walkforward_report.json numbers carry a ledger correction note instead.
+    pw_mean = np.array([float(np.mean(y[rows])) for rows in ep_by_w])
     boots_w = np.empty(n_boot)
     for b in range(n_boot):
-        pick = rng.integers(0, uw.size, size=uw.size)
-        boots_w[b] = wallet_equal(np.concatenate([ep_by_w[i] for i in pick]))
+        m = np.bincount(rng.integers(0, uw.size, size=uw.size), minlength=uw.size).astype(float)
+        boots_w[b] = float(m @ pw_mean) / uw.size
     boots_k = np.empty(n_boot)
     for b in range(n_boot):
         pick = rng.integers(0, uk.size, size=uk.size)

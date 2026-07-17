@@ -21,7 +21,7 @@ import numpy as np
 from research.data.markout import REPO_ROOT
 from research.lib.cv import MONTHS
 from . import lake
-from .alt_fresh_validate import _ctx_parts, MAJORS, STALE_MS
+from .alt_fresh_validate import _ctx_parts, _np, MAJORS, STALE_MS
 from .ksweep import _top100 as _blind_top100
 
 DERIVED = REPO_ROOT / "data" / "derived" / "copy_cohort"
@@ -192,9 +192,9 @@ def run():
         n = d["wallet"].size
         rows["wallet"].append(d["wallet"].astype(str))
         rows["fold"].append(np.full(n, f))
-        rows["rk"].append(np.asarray(d["rk"], int))
+        rows["rk"].append(_np(d["rk"], int))
         for h in HOURS:
-            rows[f"mk{h}"].append(np.asarray(d[f"mk{h}"], float))
+            rows[f"mk{h}"].append(_np(d[f"mk{h}"]))   # masked->NaN guard (audit 2026-07-17)
         print(f"  fold {f}: {n:,} majors entries pulled; overlap {overlap[str(f)]}", flush=True)
     e = {k: np.concatenate(v) for k, v in rows.items()}
 
@@ -207,7 +207,10 @@ def run():
                       "basis": "asset_ctx mid (gross); ~1-1.6bp follower lag haircut per "
                                "lag_haircut_report.json + taker fees before any net read",
                       "robust_spec": "winsor p95 in cell, wf>=3, wallet-fold-equal",
-                      "n_boot": N_BOOT, "seed": SEED, "cal_days": CAL_DAYS},
+                      "n_boot": N_BOOT, "seed": SEED, "cal_days": CAL_DAYS,
+                      "code_commit": lake.git_describe(),
+                      "audit_2026_07_17": "masked->NaN markout guard (weighted cluster boot "
+                                          "here was already multiplicity-correct)"},
            "overlap_per_fold": overlap, "cells": {}}
 
     for ki, K in enumerate(KS):
