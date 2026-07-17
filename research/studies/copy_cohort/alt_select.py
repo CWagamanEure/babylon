@@ -9,8 +9,16 @@ Outputs:
   data/derived/copy_cohort/alt_universe_cohorts.json      cohorts + scale + provenance
   data/derived/copy_cohort/informedness/fold=T/pool.parquet   per-wallet score table (the deliverable)
 
-    python -m research.studies.copy_cohort.alt_select            # all folds
-    python -m research.studies.copy_cohort.alt_select 202511     # one fold
+    python -m research.studies.copy_cohort.alt_select            # all folds (frozen research run)
+    python -m research.studies.copy_cohort.alt_select 202511     # one fold (frozen research run)
+    python -m research.studies.copy_cohort.alt_select --month 202607   # ROLLING mode (prospective)
+
+Rolling mode (`--month YYYYMM`): scores an ARBITRARY month M with formation = the 3 calendar months
+strictly before M (calendar arithmetic, not the research MONTHS list). Refuses M if the lake lacks
+wallet_coin_day partitions for any formation month. Writes informedness/fold=M/pool.parquet plus a
+merge-don't-truncate update of data/derived/copy_cohort/rolling_cohorts.json (the frozen
+alt_universe_cohorts.json is NEVER touched). Same frozen method params; code_commit stamped via
+lake.git_describe(). Prospective only — historical research folds are not re-run.
 """
 from __future__ import annotations
 
@@ -30,6 +38,7 @@ CAP = 100_000.0
 ND_MIN = 15
 TOP_K = 30
 OUT_JSON = REPO_ROOT / "data" / "derived" / "copy_cohort" / "alt_universe_cohorts.json"
+ROLLING_JSON = REPO_ROOT / "data" / "derived" / "copy_cohort" / "rolling_cohorts.json"
 INF_DIR = REPO_ROOT / "data" / "derived" / "copy_cohort" / "informedness"
 FOLDS = MONTHS[3:]
 
@@ -45,6 +54,28 @@ def _git_commit() -> str:
 def _formation_months(fold: int) -> list[int]:
     i = MONTHS.index(fold)
     return MONTHS[i - 3:i]
+
+
+def _prev_month(m: int) -> int:
+    y, mo = divmod(m, 100)
+    return (y - 1) * 100 + 12 if mo == 1 else y * 100 + (mo - 1)
+
+
+def _calendar_formation(month: int) -> list[int]:
+    """3 calendar months strictly before `month` (pure calendar arithmetic — rolling mode)."""
+    y, mo = divmod(month, 100)
+    if not (2000 <= y <= 2100 and 1 <= mo <= 12):
+        raise SystemExit(f"bad month {month}: expected YYYYMM")
+    out, m = [], month
+    for _ in range(3):
+        m = _prev_month(m)
+        out.append(m)
+    return out[::-1]
+
+
+def _lake_month_days(con, month: int) -> int:
+    """Number of wallet_coin_day date= partitions the lake holds for `month`."""
+    return con.execute("SELECT count(*) FROM glob(?)", [lake.wcd_month_glob(month)]).fetchone()[0]
 
 
 def _pool_panel(con, months: list[int]):
@@ -93,8 +124,9 @@ def _scale_of(con, wallets: list[str], months: list[int]) -> dict[str, float]:
     return {w: float(m) for w, m in rows}
 
 
-def build_fold(con, fold: int) -> dict:
-    months = _formation_months(fold)
+def build_fold(con, fold: int, months: list[int] | None = None) -> dict:
+    if months is None:
+        months = _formation_months(fold)
     d = _pool_panel(con, months)
     w = d["wallet"].astype(str)
     nd = np.asarray(d["nd"], float)
@@ -150,7 +182,51 @@ def build_fold(con, fold: int) -> dict:
     return out
 
 
+def run_rolling(month: int) -> int:
+    """Rolling scoring for one arbitrary month (prospective operation, not the research folds)."""
+    months = _calendar_formation(month)
+    con = lake.connect()
+    missing = [m for m in months if _lake_month_days(con, m) == 0]
+    if missing:
+        print(f"[alt_select --month {month}] REFUSED: lake has no wallet_coin_day partitions for "
+              f"formation month(s) {missing} (formation={months})", file=sys.stderr)
+        return 1
+    print(f"[alt_select] ROLLING month {month}  formation={months}", flush=True)
+    fold = build_fold(con, month, months=months)
+    fold["code_commit"] = lake.git_describe()
+    fold["mode"] = "rolling"
+
+    # merge-don't-truncate (audit F2): load existing, update this fold only, rewrite
+    if ROLLING_JSON.exists():
+        rep = json.loads(ROLLING_JSON.read_text())
+    else:
+        rep = {"config": {"cap": CAP, "nd_min": ND_MIN, "top_k": TOP_K,
+                          "prereg": "ALT_UNIVERSE_PREREG.md (+addendum)",
+                          "mode": "rolling"},
+               "folds": {}}
+    rep["folds"][str(month)] = fold
+    ROLLING_JSON.write_text(json.dumps(rep, indent=1, default=str))
+
+    nf = fold["null_fit"]
+    print(f"  pool={fold['pool_size']:,}  null(mu0={nf['mu0']:+.2f}, s0={nf['sigma0']:.2f}, "
+          f"pi0={nf['pi0']:.3f})", flush=True)
+    for arm in ("C", "T", "P"):
+        mem = fold["arms"][arm]["members"]
+        ov = {"C", "T", "P"} - {arm}
+        print(f"  arm {arm}: top{TOP_K}; overlap " +
+              ", ".join(f"{o}={len(set(mem) & set(fold['arms'][o]['members']))}" for o in sorted(ov)),
+              flush=True)
+    print(f"-> {ROLLING_JSON}")
+    print(f"-> {INF_DIR / f'fold={month}' / 'pool.parquet'}")
+    return 0
+
+
 def main(argv):
+    if argv and argv[0] == "--month":
+        if len(argv) != 2:
+            print("usage: alt_select --month YYYYMM", file=sys.stderr)
+            return 2
+        return run_rolling(int(argv[1]))
     folds = [int(a) for a in argv] or FOLDS
     con = lake.connect()
     rep = {"config": {"cap": CAP, "nd_min": ND_MIN, "top_k": TOP_K,

@@ -174,7 +174,12 @@ def _process_day(day: str, force: bool) -> str:
             SELECT wallet, coin, {int(day)} AS day,
                    count(*) AS n_fills,
                    count(*) FILTER (WHERE crossed) AS n_taker,
-                   SUM(realized_pnl) AS pnl, SUM(fee) AS fee, SUM(builder_fee) AS builder_fee,
+                   -- 2026-07-17 fix: source builder_fee is NULL when no builder is involved, so a
+                   -- plain SUM over an all-NULL group yielded NULL (71-82% of wcd rows). COALESCE
+                   -- per fill → semantically-correct 0. (realized_pnl/fee/notional verified zero
+                   -- NULLs at source; the n_* COUNT-FILTER columns can never be NULL.)
+                   SUM(realized_pnl) AS pnl, SUM(fee) AS fee,
+                   SUM(COALESCE(builder_fee, 0)) AS builder_fee,
                    SUM(abs(sz) * px) AS notional,
                    count(*) FILTER (WHERE crossed AND direction IN ('Open Long','Open Short')
                                       AND start_position = 0) AS n_open_flat,

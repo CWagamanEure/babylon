@@ -112,3 +112,35 @@ cached locally anyway.
   tables for ops/dashboards, never for selection/inference.
 - Future serving tables (same home, when forward paper-trading arms): live roster, follow journal
   (transactional), run registry. Wallet↔entity bridge to `core.entities` is incerto future work.
+
+## ROLLING OPERATION (activated 2026-07-17)
+
+The lake is no longer a fixed-window snapshot: a daily cron on the nyc1 droplet (`10.116.0.4` via jump
+`167.71.29.107`) extends it continuously past the 20250801–20260630 study window (~$0.04/day
+requester-pays).
+
+**Daily cron** — `/root/daily_lake_sync.sh` (mirrored in-repo at `research/data/daily_lake_sync.sh`),
+crontab `30 6 * * *` (06:30 UTC, after Reservoir's ~1-day-lag publish):
+- Ingests **T-1 and T-2 with `--force`** — the trailing-edge provisional rule from
+  RESERVOIR_ALT_FILLS_SPEC §0 is now LIVE: Reservoir republishes recent days, so the last two days are
+  provisional and must be unconditionally re-ingested (force deletes the manifest first, then re-pulls).
+- Ingests **T-3 without force** — etag-keyed catchup; a no-op when the day is already current.
+- Logs to `/root/daily_lake_sync.log`; exits nonzero on any failed day.
+- Promotion leg: currently a **no-op echo**; the `incerto_promote.sh` Postgres promotion is deployed
+  through a separate incerto ticket (commented TODO in the script — do not enable from babylon).
+- Ingest code: `/root/lake_reservoir_ingest.py` = deployed copy of
+  `research/data/lake_reservoir_ingest.py` (2026-07-17 builder_fee COALESCE fix); `LAKE_CODE_COMMIT`
+  in `/root/.lake_env` is stamped from babylon `git describe --always --dirty` at each deploy.
+
+**Monthly scoring runbook (run locally on the 1st of month M, or any day after):**
+```
+.venv/bin/python -m research.studies.copy_cohort.alt_select --month <M>   # e.g. 202608 on 2026-08-01
+# then review pool_size + null_fit vs historical folds before any promotion (supervised)
+```
+Rolling mode computes formation = 3 calendar months strictly before M by calendar arithmetic and
+REFUSES to run if the lake lacks wallet_coin_day partitions for any formation month. Outputs:
+`data/derived/copy_cohort/informedness/fold=M/pool.parquet` + a merge-don't-truncate fold update in
+`data/derived/copy_cohort/rolling_cohorts.json` (the frozen research `alt_universe_cohorts.json` is
+never touched). **Promotion is supervised:** a human sanity-checks the new fold (pool size and null
+fit within historical bands, cohort overlap sane) before it is promoted to the incerto serving layer —
+no automatic promotion from cron.
