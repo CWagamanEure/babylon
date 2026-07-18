@@ -126,8 +126,16 @@ crontab `30 6 * * *` (06:30 UTC, after Reservoir's ~1-day-lag publish):
   provisional and must be unconditionally re-ingested (force deletes the manifest first, then re-pulls).
 - Ingests **T-3 without force** — etag-keyed catchup; a no-op when the day is already current.
 - Logs to `/root/daily_lake_sync.log`; exits nonzero on any failed day.
-- Promotion leg: currently a **no-op echo**; the `incerto_promote.sh` Postgres promotion is deployed
-  through a separate incerto ticket (commented TODO in the script — do not enable from babylon).
+- Promotion leg (**ACTIVE 2026-07-18**): after the ingest legs, promotes **yesterday's wallet-coin-day
+  partition** into the incerto Postgres serving layer via the audited `incerto-hl-promote` CLI
+  (TICKET-0063 wrapper `/root/incerto/scripts/hl_promote_daily.sh`, run with no args = `--commit`).
+  Idempotent (ON CONFLICT upsert); promotion failure sets rc=1 (alerts) but never rolls back the lake
+  sync. Deps: `/root/incerto/.venv` (incerto`[promotion]` + sqlalchemy + `psycopg[binary]`),
+  `/root/incerto.env` (owner-provided `INCERTO_DATABASE_URL` + `INCERTO_RAW_STORE_S3_*`),
+  `HL_CODE_COMMIT` stamped from `LAKE_CODE_COMMIT`. The **roster promotion (scores + cohorts) stays
+  SUPERVISED**: the automated leg does the daily wcd only and stands down on the 1st — a human runs the
+  monthly scoring locally, reviews pool/null-fit, then promotes the roster (which also catches up the
+  turn-of-month wcd day).
 - Ingest code: `/root/lake_reservoir_ingest.py` = deployed copy of
   `research/data/lake_reservoir_ingest.py` (2026-07-17 builder_fee COALESCE fix); `LAKE_CODE_COMMIT`
   in `/root/.lake_env` is stamped from babylon `git describe --always --dirty` at each deploy.
