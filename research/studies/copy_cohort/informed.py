@@ -130,6 +130,19 @@ def two_groups(z: np.ndarray) -> dict:
         f0 = np.exp(-0.5 * ((zc - mu0) / sigma0) ** 2) / (sigma0 * np.sqrt(2 * np.pi))
         return np.clip(pi0 * f0 / np.maximum(f, 1e-300), 0.0, 1.0)
 
+    # Tweedie posterior mean of the true (studentized) effect: for z | theta ~ N(theta, sigma0^2)
+    # with marginal density f, E[theta | z] = z + sigma0^2 * d/dz log f(z) (Efron 2011,
+    # "Tweedie's formula and selection bias"). log f = polyval(coef_f, z) + const, so the
+    # correction is sigma0^2 * polyval(coef_f', z) — exact, straight off the fitted log-density.
+    # This is the winner's-curse-corrected effect: it shrinks bulk z heavily toward the null and
+    # the extreme tail barely at all. Evaluated on the occupied support only (same clip as lfdr).
+    dcoef_f = np.polyder(coef_f)
+
+    def theta_of(zv: np.ndarray) -> np.ndarray:
+        zc = np.clip(zv, z_lo, z_hi)
+        return zc + sigma0 ** 2 * np.polyval(dcoef_f, zc)
+
     lf = lfdr_of(z)
     return {"lfdr": lf, "p_informed": 1.0 - lf, "mu0": mu0, "sigma0": sigma0, "pi0": pi0,
-            "lfdr_of": lfdr_of}
+            "lfdr_of": lfdr_of, "theta_hat": theta_of(z), "theta_of": theta_of,
+            "coef_f": coef_f, "z_lo": z_lo, "z_hi": z_hi}

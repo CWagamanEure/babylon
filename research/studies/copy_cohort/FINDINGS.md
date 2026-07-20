@@ -896,3 +896,677 @@ directional replication, and all other standing verdicts are unchanged in direct
 CIs. Artifacts: alt_fresh_validation_report.json, v2_bakeoff_report.json (selections frozen, re-inferred),
 majors_native_report.json, ksweep_report.json, capday_alt_validation_report.json, consensus_report.json
 (+WALLET_ATTRIBUTION.md re-print), gated_backtest_report.json (+BACKTEST.md re-print).
+
+### 2026-07-17 — TWEEDIE POSTERIOR MEAN: winner's-curse de-bias + sizing weight off the frozen f-hat (descriptive)
+
+User's idea ("P_informed(z) × denoised effect at z") = the empirical-Bayes posterior mean of the effect;
+exact closed form is Tweedie (Efron 2011): E[θ|z] = z + σ0²·d/dz log f(z). Since the two-groups f-hat is a
+degree-5 log-polynomial, the correction is σ0²·polyval(coef_f', z) — computed straight off the EXISTING fit,
+no constants tuned (`informed.two_groups` now also returns `theta_hat`/`theta_of`/`coef_f`; `tweedie_diag.py`).
+Descriptive/diagnostic only — NOT a new selector (registration would be needed for any forward claim).
+
+**Exactness verified:** closed-form (θ−z)/σ0² matches a central finite-difference of the fitted log-density
+to max|err| 3.7e-9 on the occupied support; θ(z) is monotone across the selection tail → it does NOT reorder
+the top-30 (confirms the a-priori read: a magnitude/sizing tool, not a selection lever; consistent with the
+v2 bakeoff "t is at the selection ceiling").
+
+**Winner's-curse haircut on the frozen arm-T cohort (30/fold, naive z_sel → de-biased θ):**
+202511 6.23→5.68 (×0.91) | 202512 6.44→6.22 (×0.96) | 202601 6.49→5.27 (×0.81) | 202602 7.09→5.44 (×0.77) |
+202603 6.59→3.98 (×0.62) | 202604 6.68→4.64 (×0.70) | 202605 6.86→5.64 (×0.82) | 202606 7.50→5.94 (×0.79) |
+202607 7.32→7.16 (×0.98). So the selected wallets' apparent formation t is overstated by ~2–38% (worst 202603);
+the de-biased effect is the honest magnitude the ledger's "winner's curse" caveat kept invoking, now quantified.
+
+**Sizing:** per-wallet weight ∝ max(θ,0) is near-even (top-5-of-30 share 0.17–0.21 vs 0.167 uniform) — mild tilt
+to the highest-z wallets, NOT concentrated → Tweedie sizing ≈ equal-weight with a gentle lean, so it won't
+introduce a fragile few-wallet bet. **CANNOT overcome the study's binding limit:** θ de-noises the FORMATION
+effect, and the weak link is formation-θ → forward-copyable edge (buried under ~164 bp/trade; structure not raw
+t is what carries forward). Denoising a weak predictor yields a cleaner weak predictor. **Use:** (1) winner's-
+curse-corrected expected magnitude for the paper-trader's honest priors; (2) a principled continuous sizing
+weight — both fold into the paper-trader spec; NOT a selection claim. Artifacts: `tweedie_diag_report.json`,
+`tweedie_diag.py`, `informed.py` (theta_of/theta_hat/coef_f added).
+
+### 2026-07-17 — WHALE-TILT of Tweedie: NEGATIVE here (daily cap severs score↔size); + registered forward rules
+
+**Tested the "Tweedie makes whales do better (lower hit-rate, higher return)" claim on our frozen arm-T
+cohorts (192 cohort-wallet-folds).** Result: it does NOT transfer to this construction.
+- corr(θ, log scale) = **+0.054**; corr(z, log scale) = +0.025; rank-corr +0.084 — θ ⟂ wallet scale.
+- θ-weighted mean log-scale 5.442 ≈ equal-weight 5.426 → θ-weighting sends NO extra capital to big wallets.
+- mean θ LARGE +5.39 (n97) vs SMALL +5.32 (n143), despite LARGE median notional $754 vs SMALL $55 (~14×).
+**Mechanism:** the folklore holds where the *score correlates with size* (raw $-PnL / liquidity-weighted
+alpha). Our metric is capped ($100k/day) + vol-normalized t = a CONSISTENCY score, so the ±cap deliberately
+severs score↔size; θ is size-neutral and the whale/lumpiness channel never engages (also why the Tweedie
+weights are near-even, top-5-of-30 ≈ 0.18). Reproduce: the θ-vs-scale block over `informedness/fold=*` ⋈
+`alt_universe_cohorts.json` scale_med_notl.
+
+**REGISTERED FORWARD RULES (frozen a priori, evaluate on forward/new data only — NOT tuned on burned folds):**
+- **`theta_weight_v1` sizing/selection:** copy weight ∝ max(θ,0) (Tweedie posterior mean, `informed.theta_of`)
+  over the bot-screened (fills/day<1000, taker_share<0.1) + liquid (trailing ADV≥$10M) + ≥$250 pool; N is
+  EMERGENT (no top-K), single-wallet weight capped (cap TBD, e.g. 10%) so no name dominates. Replaces
+  "top-30 equal-weight." Also carries the winner's-curse-corrected θ as the honest expected-magnitude prior.
+- **`capday_monthcap` candidate metric slug:** metric = mean of DAILY-capped PnL additionally capped at the
+  MONTH level, ÷ active days. A-PRIORI PREDICTION (pre-committed): small effect on THIS selection (θ already
+  whale-flat; monthly cap bites hyperactive many-capped-days wallets already removed by the bot screen);
+  DIRECTION = more-consistency/less-magnitude (raise hit-rate, lower return concentration) — the OPPOSITE
+  lever to the whale tilt. To be evaluated only if a forward test is run; reordering-vs-daily-cap is a cheap
+  burned-fold diagnostic (allowed) but any edge claim needs forward data.
+
+**Next (offered):** direct hit-rate/return test = θ-weight vs equal-weight forward BOOK on the arm-T cohort
+(the paper-trader comparison) — the only thing that measures the "lower hit-rate/better-return" claim head-on.
+
+### 2026-07-17 — TWEEDIE N-SIZING actually RUN: no lift over equal-weight top-30 (registration demoted)
+
+Ran the θ-weight / emergent-N book on the arm-T cohort's REAL forward 8h alt markouts (8 burned folds,
+winsor-p95 + wf≥3, self-truncating top-200-by-θ pull; `tweedie_sizing.py` / `tweedie_sizing_report.json`).
+Answers the user's "did we try the Tweedie sizing" directly — YES, and it does not beat equal-weight.
+- **θ-weight ≈ equal at N=30:** 18.5 vs 18.8 bp (Δ ≈ −0.3, negligible vs these books' single-digit-to-tens-bp
+  noise), hit rate identical 57.5%, effective N 232 vs 240 (θ concentrates only ~3.5%). The cap-neutralized
+  score is too flat to reweight — consistent with the whale-flat finding (corr(θ,scale)=+0.05).
+- **Emergent N wider HURTS:** top60 13.9 / top100 14.2 bp, hit 54.4/54.5% — expanding past top-30 dilutes
+  return (18.8→~14) and hit rate (57.5→54.5). Ranks 31–100 by θ add lower-return, same-hit-rate flow →
+  emergent-N wants to go TIGHTER, not looser. (top100==top200: only ~573 followable wallet-folds exist in
+  the top-200, so the θ-book self-truncates.)
+- **The "lower hit-rate / higher-return" whale signature does NOT appear:** hit rate is flat ~54–58% across
+  every scheme and θ-weighting doesn't raise return — the cap severs the size channel it would ride.
+
+**Registration correction (anti-ratchet — the test was built and run, no lift):** `theta_weight_v1` is
+DEMOTED from the forward sizing spec — equal-weight top-30 is retained (θ-weight gives no improvement and
+wider-N dilutes). The Tweedie θ column stays useful for its OTHER job — the winner's-curse-corrected
+expected magnitude (the honest prior, per the 2026-07-17 de-bias entry) — just not as a sizing/N rule.
+Method-scoped: "θ-posterior-mean sizing does not beat equal-weight on this cap-neutralized selector."
+
+### 2026-07-17 — ENTRY-LEVEL (per-trade) SHAPE: near-coinflip hit rate + broad right skew; notional-sizing is the lottery, equal-$ is robust
+
+The sharper question the wallet-collapsed test couldn't answer. Arm-T roster forward 8h alt markout, RAW
+(no winsor), 11,728 entries / 63 wallets, 8 burned folds (`tweedie_entry_book.py` / _report.json).
+- **Per-TRADE hit rate = 51.5%** (vs the wallet-level 57.5%) — barely above a coinflip. **mean +31.0 vs
+  median +12.4 bp** ⇒ strong RIGHT SKEW: the edge is winners being BIGGER than losers, not winning more
+  often. Tail p90 +615 / p99 +1475 / max +6673; p10 −529 / min −6920.
+- **Equal-$ book ($1k/entry): NOT a lottery — broad-based & robust.** net +$36.3k @ 31bp; dropping the
+  single biggest winning trade leaves $35.6k, dropping the TOP TEN leaves $31.5k of $36.3k. The right tail
+  is spread across the top ~10–20% of trades, not one moonshot.
+- **Notional-sized book (copy actual position size): collapses AND becomes a one-trade lottery.** net only
+  +$1.28k @ 4.9bp on $2.64M; **dropping the single biggest winner turns it NEGATIVE (−$89)**; drop-top-10
+  = −$6.3k. A few huge-notional entries dominate the dollar book and their outcomes are noise.
+**Read:** the copy edge is a positive-EXPECTANCY-via-asymmetry profile (≈coinflip frequency, winners fatter
+than losers), broad and robust UNDER EQUAL-$ SIZING but a fragile one-bet lottery UNDER NOTIONAL SIZING —
+directly reconfirming the prior betascale/α-curve result (α=1 copy-actual-size fragile 2/8 folds; compress-to-
+typical robust) and the "size carries info but full notional is fragile" thread. **Paper-trader implication:
+size equal-$ / compressed, NOT notional-proportional.** CAVEAT: RAW includes the illiquid-name tail (the
++600–6700bp prints are likely ADV<$1M names per the liquidity cut — unharvestable at size), so the liquid-
+screened equal-$ book is lower than 31bp; the STRUCTURAL findings (51.5% per-trade hit, right skew,
+notional-fragility) are the robust takeaways, not the 31bp level. Corrects the earlier over-reach ("no whale
+signature") — the right-skew/few-big-winners shape IS present per-trade; it's just harvestable only if you
+DON'T size by notional. Artifacts: tweedie_entry_book.py, tweedie_entry_book_report.json.
+
+### 2026-07-17 — MAJORS per-trade shape (K30-native @8h): coin-flip hit rate, median trade ≈ 0, edge is ALL right tail
+
+Majors counterpart of the alt entry-book (user flagged the alt run was alts-only). Majors-native K30
+selection (majors-only capped-PnL t-stat), majors flat taker opens ≥$250, 8h markout, RAW, 5,655 entries /
+51 wallets, 8 burned folds (`majors_entry_book.py` / _report.json).
+- **Per-trade hit rate = 50.0%** (exact coin flip; alts 51.5%). **mean +24.9 vs median +0.4 bp** — the median
+  majors trade makes ≈NOTHING; the entire +24.9 mean is the right tail. Even more asymmetric than alts
+  (median +12.4). Tail p90 +452 / p99 +1027 / max +1996; p10 −384 / min −1216 — TIGHTER than alts (max 1996
+  vs 6673: liquid, no illiquid-print blowups).
+- **Equal-$ book:** net +$14.1k @ 24.9bp; robust — drop top-1 winner → $13.9k, drop top-10 → $12.3k of
+  $14.1k. Broad-based, not a lottery (like alts equal-$).
+- **Notional book:** net +$24.4k @ 23.3bp — UNLIKE alts (where notional collapsed to 4.9bp & went negative on
+  drop-top-1), majors notional-sizing HOLDS (23.3bp ≈ equal-$) but is more concentrated: drop top-10 winners
+  → $5.4k (−78%), still positive. Majors notionals lack the alt dust/whale spread, so notional sizing is
+  tolerable on majors though equal-$ is still more robust.
+**Read:** majors (the liquid, deployable book) is a **50% hit-rate, median≈0, right-tail-only** edge — you are
+paid entirely on the tail, not the typical trade. COST IMPLICATION is sharp: a 2–4bp majors round-trip eats
+the ~0 median trade outright, so the net edge lives purely in the tail clearing costs — reinforces why the
+majors book's honest net is thin (BACKTEST §FINAL: +13bp/tr net, SR 1.02) despite +25bp gross. Equal-$ sizing
+preferred on both venues; notional tolerable on majors, fatal on alts. Artifacts: majors_entry_book.py,
+majors_entry_book_report.json.
+
+### 2026-07-18 — FILTERED TRADER QUALITY: architecture frozen; no result yet
+
+**Question.** Can a filtered daily relative-PnL state improve the rolling majors-native top-30 @8h selector?
+**Design.** Daily majors realized PnL is total-fee-netted and normalized to a $100k notional budget, converted
+to a within-day normal-score rank, then passed through a pooled causal homoskedastic AR(1)/Kalman filter.
+Each monthly cutoff resets state over the same trailing three months as the fair `TSTAT30` control; top-30,
+equal-$, 8h, $250-minimum book mechanics stay fixed. Primary = ungated accepted-entry capital-weighted net-bp
+delta `KF-REL − TSTAT30`; the frozen 6h distinct-other smart-consensus rule is a same-rule secondary overlay,
+not part of the selector claim. Care-about = +5bp improvement.
+
+**Inference/governance.** Historical 202511–202606 folds are burned and can candidate-rank only. A new forward
+epoch must be prospectively sealed before its first fill, with a six-month no-read minimum and 12-month cap.
+Binding uncertainty is the envelope of multiplicity-preserving wallet-cluster and paired calendar-block CIs;
+MDE and +5bp controls must pass under both outer resampling families. Any interval admitting a material lift,
+failed power/control, or construction mismatch is unresolved with its point direction surfaced—not a null.
+
+**Architecture audit.** Independent stats, leakage, and correctness passes found and forced repairs to the
+initial design: the primary unit was aligned to +5bp/entry; wallet clustering was added; AR(1) gap covariance,
+state history, deterministic fallback, forward sealing/outcome maturation, priceability/ordering, distinct-
+other consensus, outer MDE resampling, and an exhaustive unresolved verdict were frozen. Re-review reports no
+remaining material blocker. **No performance number has been computed.** Artifact:
+`FILTERED_TRADER_QUALITY_ARCH.md`; audit scope: `audit/filtered_trader_quality_arch/SCOPE.md`.
+
+### 2026-07-18 — FILTERED TRADER QUALITY RUN: adverse point vs TSTAT30, unresolved/underpowered; consensus does not rescue KF
+
+**Question/method.** The frozen daily relative-PnL AR(1)/Kalman selector was run on burned folds
+202511–202606 and compared with the same-input rolling majors `TSTAT30` selector. Every arm has exactly 30
+unique wallets/fold. The book uses majors flat opens ≥$250, equal-$2.5k clips, max one concurrent
+wallet×coin position, $50k/coin cap, 8h markout, and 5.5bp cost. Cache reuse is bound to source-manifest,
+code/config, context, and exact-roster hashes. Historical folds remain candidate-ranking only.
+
+**Primary result.** `KF_REL − TSTAT30` = **−15.35bp/accepted entry**, wallet CI
+**[−47.50,+18.14]**, calendar-block CI **[−54.37,+17.04]**, binding CI
+**[−54.37,+18.14]**. Cross-unit directions: **3/8 folds** and **2/4 coins** favor KF. Absolute descriptive
+books: KF **−2.39bp** (n=559) versus TSTAT30 **+12.96bp** (n=1,625); published majors30 **+15.50bp**
+(n=1,654). Normal MDE diagnostic is **51.34bp**, far above the +5bp care effect; the preregistered empirical
+outer-resampling MDE was not run. Therefore this has **not earned a null/"filtering does not work" verdict**:
+status is **UNRESOLVED / UNDERPOWERED, negative primary direction**, not deployable and not a replacement for
+TSTAT30.
+
+**Secondary/consensus.** KF−EMA is a narrow positive lean at **+6.86bp**, binding CI
+**[−22.21,+41.07]**, only 3/8 folds and 2/4 coins positive; it is burned, unadjusted, and KF itself remains
+negative. KF−TSTAT is positive on SOL (+88.46bp) and ETH (+28.20bp), but those are post-result dependent
+slices. The frozen smart-consensus subset does **not** rescue KF: KF-smart **+4.19bp on only 16 entries**;
+KF-smart−TSTAT-smart **−15.87bp**, binding CI **[−138.57,+138.42]**. TSTAT-smart is descriptively
++20.06bp versus +12.96bp ungated, but this run contains no direct smart-minus-ungated inference and ex-HYPE
+smart is negative, so it adds no new consensus claim. The pre-existing consensus-gated TSTAT/published
+strategy remains the forward hypothesis; consensus is not part of the filtered-selector result.
+
+**Construction correction and audits.** The first emitted book was rejected after correctness audit found
+that `_ctx_parts` failed to include next-month context. The glob was fixed, all book caches invalidated, and
+the report rerun. Seven folds now include the full evaluation month plus next-month days 1–3. June has context
+through 2026-06-29 only and applies one recorded common cutoff (2026-06-29 15:59 UTC) before arm filtering.
+Final audit reconciled code/roster/cache hashes, all funnel identities and report arithmetic; 10 focused tests
+pass. Independent steelman preserves only a forward KF-vs-EMA / SOL-ETH hypothesis; independent prosecution
+finds no carryable positive because the broad primary is adverse, the secondary is multiplicity-exposed, and
+consensus is extremely sparse. Artifacts: `filtered_quality.py`, `filtered_quality_book.py`,
+`data/derived/copy_cohort/filtered_quality/{rosters.json,book_report.json}`; audit scopes under
+`audit/filtered_trader_quality_{arch,code}/`.
+
+### 2026-07-18 — DYNAMIC T-QUALITY: corrected architecture frozen; no result yet
+
+**Question.** Can recency weighting improve the successful majors top-30 without replacing its t-stat
+estimand by daily percentile ranks? Historical 202511–202606 is explicitly post-hoc/burned diagnostic data.
+
+**Frozen primary.** Build total-fee-net daily majors PnL scaled down to a $100k turnover budget. On one common
+EW-rankable pool, compare equal-calendar `TSTAT_COMMON30` with a 21-day-half-life `EW_T30`; both retain PnL
+magnitude, wallet-specific dispersion, and effective sample size. Literal unrestricted TSTAT remains a
+reconciliation arm. A common HAC-valid static/EW pair checks seven-day serial dependence. Blowup handling
+(liquidation or normalized day <=−$10k, reset plus 30-day quarantine) and formation-only copyability/HFT gates
+are separate secondaries with same-window static controls, so they cannot be credited to filtering.
+
+**Execution/inference.** Copy only collapsed majors flat opens ≥$250, fixed $2.5k, 8h, 5.5bp cost, wallet-coin
+concurrency, $10k source-wallet cap, and $50k coin cap. Entry and exit use the first context midpoint after the
+causal decision time; common maturation precedes arm membership. Consensus stays a strict-prior distinct-other
+secondary overlay. The sole decision distribution is a crossed global-wallet×paired-seven-day product-weight
+bootstrap; it supplies CI, MDE80, +5bp power, and Holm p-values. One-way wallet/time intervals and fold/coin
+signs are diagnostics only.
+
+**Architecture audit.** Independent stats, leakage, and correctness audits forced repairs to the initial draft:
+common-pool parity, post-shock static/EW parity, a HAC-valid intersection, causal test-month quarantine,
+strictly-post-signal pricing, deterministic cap ordering, exact context cutoff, exact-money boundaries, a
+fully specified consensus pool, crossed two-way inference, and operational Holm/power rules. Re-review found
+no remaining HIGH blocker. **No performance number has been computed.** Artifact:
+`DYNAMIC_T_QUALITY_ARCH.md`; audit scope: `audit/dynamic_t_quality_arch/SCOPE.md`.
+
+### 2026-07-18 — DYNAMIC T-QUALITY RUN: 21-day EW is adverse vs static t-stat; missingness-unresolved and underpowered at +5bp
+
+**Question/method.** The frozen corrected design was run on eight walk-forward but historically burned folds,
+202511–202606. The primary is the common-pool, ungated `EW_T30 − TSTAT_COMMON30` accepted-entry net-bp
+difference. Formation uses total-fee-net daily majors PnL scaled down to a $100k daily turnover budget; both
+arms select 30 wallets from the same rankable pool. The copy book uses strictly post-signal midpoint entry,
+$2.5k equal clips, one wallet×coin position, $10k/wallet and $50k/coin caps, 8h holding, and 5.5bp cost.
+Historical results remain **POST-HOC BURNED DIAGNOSTIC; NOT FORWARD EVIDENCE**.
+
+**Primary controlled result.** EW minus static t-stat is **−22.72bp/entry**, crossed global-wallet×paired-7d
+CI **[−51.18,−1.98]** (wallet CI [−36.62,−10.98], time CI [−41.84,−7.53]). The direction is adverse in
+**7/8 folds**; the fold deltas are −31.39, +1.64, −14.21, −26.12, −20.63, −3.83, −66.06, and −9.87bp.
+Cross-coin directions split: BTC −12.63, HYPE −33.83, ETH +15.57, SOL +16.72bp (**2/4 positive**), so the
+pooled adverse result is materially HYPE-dependent. Absolute books are descriptive only: EW −19.59bp
+(n=1,563) versus common static t-stat +3.14bp (n=1,621).
+
+**Over-nulling gate / construction.** MDE80 is **31.61bp** and power at the +5bp care effect is only
+**7.43%**, so the design is blind to the deployment-sized lift. Crossed fold/wallet combination was run as
+registered. The May-30 partial context reserved capacity rather than freeing slots or backfilling: EW has
+5/1,568 unpriced accepted-capacity entries overall and 5/180 (2.78%) in May; static has 10/1,631 overall and
+10/196 (5.10%) in May. Both breach the frozen 2% per-fold gate. Under the registered ±2,000bp endpoint stress,
+the favorable crossed CI reaches **+56.33bp**. Therefore the exhaustive decision flags correctly read
+`positive_promotion_eligible=false`, `method_null_eligible=false`, verdict
+**`MISSINGNESS_UNRESOLVED`**. This earns the wording “EW materially underperformed directionally in these
+burned pooled-major folds,” but **not** “recency filtering has no value” or even a powered method-scoped null.
+
+**Secondaries and consensus.** All four registered secondary improvements fail promotion after Holm and all
+fail the +5bp power gate: EW-HAC−HAC −5.40bp, CI [−30.03,+19.22], Holm q=1; shock−EW −1.42bp,
+CI [−7.10,+3.88], q=1; copyable-EW−copyable-static −11.95bp, CI [−30.34,+1.52], q=0.434; and
+EW-smart−static-smart −37.12bp, CI [−94.42,+0.26], q=0.434. Thus consensus does not rescue EW.
+The rolling top-30 **selector itself does not use consensus**. The old highest raw majors book is the
+published static top-30 with a separate smart-consensus subset overlay (distinct other top-half-t wallet,
+same coin/direction, prior 6h): in this stricter rerun it is descriptively +17.97bp (n=984), CI
+[−31.28,+78.35], versus published ungated +5.52bp (n=1,650), CI [−29.55,+47.02]. No direct registered
+smart-minus-ungated inference exists here; dropping the best fold leaves smart +0.10bp and ex-HYPE is
+−55.44bp. It remains a concentrated HYPE-forward hypothesis, not an established best strategy.
+
+**Required opposing framing and audit.** Independent steelman preserves only the hypothesis that static
+t-stat selection plus prior-wallet agreement may identify a real HYPE-heavy consensus effect; it cannot
+steelman broad EW improvement. Independent prosecution finds no carryable positive because the sample is
+burned, the apparent smart lift lacks a direct controlled contrast, the static books are regime/HYPE
+concentrated, and all registered EW comparisons are adverse or unresolved. Final independent correctness
+reconciliation is CLEAR: primary ordering and arithmetic, all 72 arm-fold funnel identities, 18 book dollar
+totals, crossed CI/MDE/power fields, missingness endpoints/flags, and both Holm families reconcile; 31 focused
+tests and Ruff pass. Artifacts: `dynamic_t_quality.py`, `dynamic_t_book.py`,
+`data/derived/copy_cohort/dynamic_t_quality/{rosters.json,book_report.json}`; audit scopes under
+`audit/dynamic_t_quality_{arch,code}/`.
+
+### 2026-07-18 — LONG HALF-LIFE T-QUALITY: 60-day diagnostic frozen; no result yet
+
+**Question.** Does a **60-calendar-day half-life** beat the identical common-pool static t-stat in the burned
+folds? Sixty days was chosen after observing the 21-day result; there is no further half-life sweep, but this
+adaptive run cannot identify why 21 days failed or earn a fresh historical positive/null. Formation data,
+$100k daily turnover normalization, wallet-specific
+uncertainty/effective N, exact top-30, causal equal-$ 8h book, crossed inference, missingness endpoints, +5bp
+care effect, and four Holm-controlled secondaries are unchanged. Consensus remains an overlay, not selector
+input. The eight months are burned diagnostic data and the 21-day artifacts must not be overwritten. **No
+60-day performance number has been computed.** Architecture audits require frozen profile-specific paths,
+explicit 60-day propagation through every EW score, profile-bound cache/report identities, and fail-closed
+book validation before computation. Artifact: `LONG_HALF_LIFE_ARCH.md`.
+
+### 2026-07-18 — LONG HALF-LIFE T-QUALITY RUN: EW60 lands near static; small positive point, direction unresolved
+
+**Method/governance.** The single frozen `hl60` profile was run on burned folds 202511–202606 after independent
+statistics, leakage, and correctness audits. Sixty calendar days is explicit in primary EW, weighted HAC,
+shock-reset EW, and copyability EW; the static comparator remains ordinary and uses the identical EW60-rankable
+common pool. All panels, rosters, entries, sidecars, and reports are isolated under
+`dynamic_t_quality_hl60`; the original 21-day roster/report hashes are unchanged. Because 60 days was chosen
+after observing the related KF/21-day results, the artifact is always
+**`BURNED_ADAPTIVE_CANDIDATE_DIAGNOSTIC`** and cannot earn historical promotion or a formal method null.
+
+**Primary controlled result.** EW60 is descriptively **+3.89bp/entry** (n=1,570) versus common static t-stat
+**+3.14bp** (n=1,621), so `EW60 − static` = **+0.75bp/entry**. Crossed global-wallet×paired-7d CI is
+**[−13.07,+15.72]** (wallet [−8.18,+11.37], time [−6.35,+7.49]). Fold deltas are −8.06, −4.63,
++15.59, −0.78, −1.75, 0.00, +7.25, and −2.43bp: **2/8 positive**, one zero. Coin deltas split **2/4**:
+BTC +2.80, ETH +2.59, SOL −2.90, HYPE −2.17bp. The point therefore does not have broad cross-unit support.
+
+**What the longer memory changed.** EW60 overlaps static by 25–27/30 wallets per fold (mean 26.4), versus
+EW21 overlap with EW60 of 20–26 (mean 23.4). Relative to the identical static comparator, the historical point
+moved descriptively from EW21 **−22.72bp** to EW60 **+0.75bp**: longer memory removed the severe adverse
+21-day result and behaves like a conservative static rerank. This is useful candidate ranking, but it is not
+a calibrated EW60−EW21 mechanism test and does not prove that recency adds edge.
+
+**Over-nulling/construction gate.** MDE80 is **20.42bp**, far above the +5bp care effect; power at +5bp is
+only **7.25%**. May again breaches the frozen 2% per-fold missingness gate: EW60 excludes 9/216 = **4.17%**
+and static 10/196 = **5.10%**, despite balanced overall rates (0.57% vs 0.61%). All-actual-coin sensitivity
+retains +0.75bp with CI [−12.82,+14.97], but endpoint bounds are unresolved: adverse CI
+[−92.03,+9.41], favorable [−9.12,+96.06]. Thus neither positive nor +5bp-null sensitivity passes. The
+correct conclusion is **inconclusive/underpowered, positive point direction, missingness unresolved**—not
+“EW60 works,” “EW60 does not work,” or “filtering has no value.”
+
+**Secondaries.** All four registered comparisons have Holm q=1 and no promotion/null eligibility: EW-HAC−HAC
+−0.56bp, CI [−10.98,+6.46]; shock−EW −1.20bp, [−6.75,+3.52]; copyable-EW−copyable-static −1.40bp,
+[−8.38,+3.33]; EW-smart−static-smart +3.40bp, [−19.61,+27.16]. Absolute EW60-smart is descriptively
++12.34bp versus static-smart +8.94bp, but there is no smart-versus-ungated estimand here, ex-HYPE smart is
+−58.46bp, and dropping the best fold leaves −5.18bp. This run adds no consensus claim.
+
+**Mandatory opposing passes and reconciliation.** The independent steelman retains EW60 as a plausible sealed
+forward candidate: it greatly reduces roster churn, is not a single-wallet artifact (drop-best-wallet
++0.51bp), and its CI still admits an economically useful lift. Independent prosecution explains the same
+facts as mechanical convergence to static plus ordinary roster noise: only 2/8 folds favor EW60, May drives
+the absolute profit, MDE/power are poor, and the experiment is the third related adaptive primary on the same
+burned months. Final construction audit is CLEAR: identity/hash lineage, primary arithmetic and arm order,
+all 72 arm×fold funnels, May bounds, secondaries/Holm, verdict flags, and output isolation reconcile. Tests:
+**36 passed; Ruff clean.** Artifacts: `LONG_HALF_LIFE_ARCH.md`, `dynamic_t_hl60.py`, and
+`data/derived/copy_cohort/dynamic_t_quality_hl60/{rosters.json,book_report.json}`.
+
+### 2026-07-18 — ADAPTIVE R/Q FILTER: component-ablation architecture frozen; no result yet
+
+**Question/design.** Test a per-trader robust-magnitude state filter with fixed 60-day gain, then independently
+add (1) breadth/concentration-dependent observation R, (2) market-volatility-dependent R, (3) slow Q/4, and
+(4) explicit blowup reset/quarantine; also test all components together. Increasing R says a particular
+observation is less trustworthy; Q/4 is the clean registered way to make every wallet estimate move more
+slowly. A global R×4 arm is omitted because, with covariance rescaled consistently, it is algebraically the
+same gain change as Q/4; a deterministic unit test must prove parity.
+
+**Powered repair.** Architecture audit found that another top-30 book would be blind by construction: the
+EW60 book's MDE80 was 20.42bp against a +5bp care effect. The load-bearing primary is therefore frozen as an
+all-eligible-wallet, coin-by-coin cross-sectionally neutral factor: `KF60_ALL−EW60`, measurement bp/day.
+This factor conditions on the realized same-day active wallet set and is explicitly a non-executable
+end-of-day selector-quality measurement; it cannot establish tradable returns. Standalone
+`R_BREADTH−BASE`, `R_VOL−BASE`, `Q_SLOW−BASE`, and `BLOWUP−BASE`, plus `ALL−BASE`, `BASE−EW60`, and
+`ALL−TSTAT_COMMON`, form one seven-test Holm positive family and a separate +5bp-null family. Every contrast
+must pass an end-to-end injected +5bp control, MDE80≤5bp, ≥80% injected power, bootstrap validity, and support
+gates. Exact top-30/equal-$ 8h books are constructed only if the factor primary is demonstrably powered; if it
+is not, the run stops and reports that the available burned data cannot resolve this adaptive filter.
+
+The common formation mask uses exact asset-context coverage and is shared by all eight arms. Volatility R is
+the squared current/prior-20 market-RV ratio; breadth R depends on same-day openings and HHI. The slow arm uses
+Q/4 with stationary posterior initialization. Blowup/ALL apply a registered state reset, final-30 formation
+exclusion, and causal D+1…D+30 evaluation quarantine. Consensus is excluded.
+
+**Architecture audit result.** Independent statistics, leakage, and correctness re-reviews are CLEAR after
+repairs to stationary initialization, the exact RV lattice/date contract, coin/day neutrality, mask-before-
+centering, the daily-sum crossed estimator, and a genuinely fixed injected-data +5bp recovery control. The
+conditional book proceeds only if all power/support/control gates pass, regardless of observed factor
+direction. No outcome was read during architecture repair.
+
+The design was created after reading KF-relative, EW21, and EW60 on these folds, so every output is a
+`BURNED_ADAPTIVE_COMPONENT_DIAGNOSTIC` with formal positive/null eligibility forced false. No outcome has been
+computed. Artifact: `ADAPTIVE_RQ_FILTER_ARCH.md`.
+
+### 2026-07-18 — ADAPTIVE R/Q POWERED FACTOR RUN: combined filter is adverse; only blowup handling leans positive
+
+**Method/governance.** The frozen eight-arm adaptive-R/Q design ran on all eight burned folds using an
+end-of-day, coin-by-coin active-wallet-neutral measurement factor. This is a selector-quality measurement,
+not an executable return. All 242 evaluation days passed the common support lattice (100% in every fold),
+with 85,057 global wallets and 35 seven-day blocks. Every contrast passed the fixed +5bp recovery, MDE,
+power, invalid-draw, support, and calendar gates; formal promotion/null eligibility remains forced false.
+
+**Powered primary.** `KF60_ALL−EW60` is **−0.970 measurement bp/day**, crossed global-wallet×paired-7d CI
+**[−1.499,−0.490]**, MDE80 **0.687bp**, shifted-noise +5bp power **100%**. Only **1/8 folds** and **0/4
+coins** favor ALL; BTC −0.149, ETH −0.188, HYPE −0.618, SOL −0.014bp/day. The fixed injected point shifts
+exactly +5 and its paired shift CI is [4.521,5.518]. Top-five-wallet absolute contribution share is only
+4.38%, so the adverse result is not a few-wallet artifact. This is a powered adverse direction on the burned
+measurement estimand; it is not a formal historical method null or deployable return result.
+
+**Independent components.** `R_VOL−BASE` is the clearest harm: **−0.505**, CI [−0.802,−0.241], positive-family
+Holm q=0.011, **0/8 folds and 0/4 coins positive**. `Q_SLOW−BASE` is −0.106, [−0.172,−0.019], q=0.065
+(1/8, 0/4): making the state roughly twice as slow did not help this measurement. `R_BREADTH−BASE` is
+−0.190, [−0.363,−0.006], q=0.105 (1/8, 0/4). `BASE−EW60` is −0.551,
+[−0.917,−0.255], q=0.039 (1/8, 0/4), so the robust-magnitude random-walk base itself trails EW60.
+
+The sole positive point is `BLOWUP−BASE`: **+0.371**, CI [+0.033,+0.734], but Holm q=0.105, with 5/8 folds
+and 3/4 coins positive; it is a suggestive burned component, not multiplicity-controlled evidence.
+Interactions do not rescue it: `ALL−BASE` −0.419, [−0.802,−0.027], q=0.105, and `ALL−TSTAT_COMMON`
+−0.707, [−1.192,−0.258], q=0.039 with 0/8 folds positive. All seven secondary +5-null families resolve
+below the care effect after Holm, but governance retains only within-run, named-contrast conclusions.
+
+**Registered continuation.** Because the primary was demonstrably resolution-capable, the design requires
+the causal top-30/equal-$ 8h book to run independently of point direction. No adaptive book outcome has yet
+been computed. Artifact: `data/derived/copy_cohort/adaptive_rq_filter/factor_report.json` and frozen
+wallet×coin×day contribution/lattice files under `adaptive_rq_filter/contributions/`.
+
+### 2026-07-18 — ADAPTIVE R/Q CONDITIONAL BOOK: tail leans are unresolved; no adaptive arm beats EW60
+
+**Lineage and execution.** The factor was regenerated after code audit so its atomic report cryptographically
+binds all eight per-fold score files. The conditional book then formed deterministic score-descending,
+wallet-ascending top-30 rosters and reused the audited causal entry engine: strictly post-signal midpoint,
+$2,500 clips, $10k/wallet and $50k/coin caps, 8h, and 5.5bp costs. Online D+1…D+30 shock quarantine applied
+only to BLOWUP/ALL; consensus was excluded. Final validation passed 67/67 factor checks, replayed the book
+from frozen entry caches with zero differences, reconciled architecture/code/report/roster/score hashes, and
+left every promotion/null eligibility flag false. Related tests: 55 passed; Ruff clean.
+
+**Absolute book points.** EW60 is +3.89bp/entry (1,570 entries; crossed CI [−33.36,+46.23]) and common t-stat
+is +2.99 (1,607; [−33.72,+46.39]). KF60_BASE is −20.71 (921; [−52.65,+12.55]); Q_SLOW −4.85
+(966; [−38.49,+39.16]); R_VOL +3.63 (846; [−27.69,+36.72]); BLOWUP −12.42
+(919; [−42.51,+17.27]); R_BREADTH −12.89 (2,410; [−39.34,+17.67]); and ALL −16.65
+(2,327; [−36.76,+7.22]). These are descriptive absolute means, not evidence that any book is profitable.
+
+**Primary book.** `ALL−EW60` is −20.54bp/entry, crossed CI [−59.88,+13.37], MDE80 49.32bp, +5bp power
+5.01%, 1/8 folds and 2/4 coins positive. Top-five wallets supply 26.44% of absolute contrast contribution.
+The overall missing-outcome rates are only 0.17% versus 0.57%, but EW60 reaches 4.17% in one fold, breaching
+the registered 2% per-fold gate. Thus the book layer is **inconclusive / underpowered and missingness-
+unresolved**, not evidence of zero effect and not a deployable negative. It cannot override the powered
+non-executable factor result, which remains adverse at −0.970bp/day [−1.499,−0.490].
+
+**Independent component books.** Every component CI crosses zero, every MDE80 is 45–59bp against the 5bp
+care effect, +5bp power is only 3.85%–4.70%, every positive Holm q is at least 0.762, and every comparison
+fails the frozen per-fold missingness gate. The strongest positive points are:
+
+- `R_VOL−BASE` +24.35bp, [−4.88,+56.02], MDE45.23, 7/8 folds and 4/4 coins positive, Holm q=.762,
+  top-five contrast share 30.79%. This tail lean conflicts with the powered factor: −0.505
+  [−0.802,−0.241], Holm q=.011, 0/8 folds and 0/4 coins positive.
+- `Q_SLOW−BASE` +15.86bp, [−6.02,+52.63], MDE47.25, 7/8 folds and 3/4 coins positive, Holm q=1.0,
+  top-five share 46.79%. Thus reducing Q to one-quarter (about a 120d implied half-life) preserves a
+  tail-only hypothesis, but the powered factor is adverse: −0.106 [−0.172,−0.019], q=.065.
+- `BLOWUP−BASE` +8.29bp, [−25.13,+40.96], MDE48.22, 4/8 folds and 3/4 coins positive, Holm q=1.0,
+  top-five share 31.94%. Its powered factor is the sole positive component: +0.371
+  [+0.033,+0.734], 5/8 folds and 3/4 coins, but positive-family Holm q=.105.
+
+**Required opposing framing.** The steelman finds the BLOWUP reset/exclusion/quarantine bundle most credible:
+its factor point is powered, diffuse (4.17% top-five share), positive under wallet/time/crossed resampling,
+and directionally supported by the book, although it is multiplicity-unestablished and tightly smaller than
+the registered +5bp/day care size. It also preserves R_VOL and Q_SLOW as possible nonlinear top-tail effects.
+The independent prosecution notes that BASE is an unusually poor book comparator, entry sets are sparse and
+unequal, component rosters are unstable, contrast concentration is material, all book Holm tests fail, and
+the broad powered factors point against R_VOL/Q_SLOW. Reconciliation: **BLOWUP is a live small burned
+positive; R_VOL/Q_SLOW top-30 effects are unresolved residuals, direction unknown; no adaptive arm is
+established or deployable.** This study did not involve consensus-opinion trading.
+
+Artifacts: `data/derived/copy_cohort/adaptive_rq_filter/factor_report.json`,
+`data/derived/copy_cohort/adaptive_rq_filter/rosters.json`, and
+`data/derived/copy_cohort/adaptive_rq_filter/book_report.json`.
+
+### 2026-07-19 — PARITY-LOCKED NESTED T FILTER: the slow filter no longer collapses; improvement is unresolved
+
+**Question and repair.** Rebuild filtering as a genuinely nested modification of the published majors
+selector: three-month BTC/ETH/SOL/HYPE daily `(pnl-fee)` scaled down to a $100k daily-turnover budget,
+ordinary active-day t-stat eligibility (`nd>=15`, `sd>0`), top 30, fixed-$5k 8h Book-B mechanics, and no
+consensus/opinion input. The earlier `KF_REL`/adaptive studies changed the estimand through cross-sectional
+rank normalization or robust magnitude scaling and therefore were not slight filters of the successful
+statistic. The new Q=0 recursion reproduces ordinary t exactly; the static roster and independently
+materialized daily/summary oracle match in every fold before any dynamic roster is accepted.
+
+**Construction result.** The 120-day filter is genuinely slight: `KF120_T30` overlaps static by 28–30/30
+wallets in every fold (mean **28.88**) with mean full-pool Spearman **0.9999**. `KF60_T30` overlaps by
+25–28 (mean **26.5**, Spearman **0.9982**). In contrast, the combined adaptive-R/breadth/blowup arm is not a
+slight filter (mean overlap **13.38**, Spearman **0.6648**) and triggers the registered construction warning
+in six folds. Consensus was excluded throughout.
+
+**Legacy parity and stale-cache discovery.** A pre-comparison hard gate found the old majors cache was a
+strict subset of current support: 5,494 old finite entries versus 5,569 refreshed, with 75 newly supported
+month-end rows (33/17/4/21 in 202601/02/03/05) and no old row removed. The architecture was explicitly
+amended post-hoc to entry-support/mark reads, before comparative filtered outcomes, and retains the original
+frozen selector SHA. Two independently structured current queries (`p0->p8` and the complete historical
+`p0->p1->p4->p8->p24->p48` chain) match exactly. The old-cache subset reproduces historical Book B exactly:
+**1,643 accepted, 3,851 wallet×coin skips, zero coin-cap skips, +13.0143bp net/entry**. The separately
+labeled refreshed historical-rule book has 1,652 accepted and **+15.5608bp**. This nine-entry shift is a
+warning that a few tail rows can materially move the headline.
+
+**Registered primary.** Under the corrected common-maturity, capacity-before-outcome comparison book,
+static is **+12.359bp/entry** (n=1,612 supported) and KF120 is **+13.380bp** (n=1,594), so
+`KF120-STATIC` = **+1.021bp/entry**. Crossed global-wallet×paired-7d CI is
+**[-9.222,+12.919]**, wallet CI [-4.942,+9.308], time CI [-5.115,+7.093], two-sided p=.816.
+The direction is positive in four folds, negative in one, and exactly tied in three; coin deltas are
+BTC +0.971, ETH -0.350, HYPE +0.492, SOL +7.530bp (**3/4 positive**). This establishes that a correctly
+nested slow filter does **not** reproduce the earlier catastrophic underperformance, but it does not
+establish improvement.
+
+**Over-null and construction gates.** MDE80 is **15.577bp** against the +5bp care effect; power at +5 is
+only **9.43%**. The null-centered injected +5 point is exact but its crossed CI is
+**[-5.401,+16.953]**, so the positive control fails. Missingness is balanced and small overall
+(KF120 11/1,605 = 0.685%; static 10/1,622 = 0.617%) but localized in 202605 at 4.78% and 5.08%, breaching
+the 2% per-fold gate. The adverse endpoint-bound CI is [-98.639,+7.701] and the favorable CI
+[-6.523,+103.710]. Five wallets supply **92.65%** of absolute contrast contribution. Raw outcomes also do
+not corroborate the small book lean: equal-entry gross is 26.11 versus 27.81bp and the registered
+p95-winsorized wallet-fold-equal point is 14.06 versus 24.95bp. Therefore the primary is an
+**inconclusive, noise-plausible residual; direction unknown**, not a live positive and not a null. The
+available eight burned folds cannot resolve a +5bp effect for a selector that swaps only about one wallet
+per fold; a powered answer requires genuinely new folds, not another post-hoc historical estimator search.
+
+**Secondaries.** The strongest steelman is `KF120-KF60`: **+8.484bp**, CI [-2.856,+28.151], but MDE
+26.031bp, +5 power 5.35%, only HYPE positive among four coins, top-five contribution 73.1%, missingness gate
+failed, and positive Holm q=1. This is only a suggestive hypothesis that slower filtering avoids damage
+from faster filtering. `R_BREADTH-KF60` is +6.011bp, [-13.453,+28.119], but only 2/8 folds positive and
+Holm q=1. R_VOL is -10.539bp, KF60-static -7.463bp, ALL-KF120 -4.040bp, bot500-static -0.362bp, and
+BLOWUP-KF60 -0.047bp; none earns a positive or a +5bp method-null after power, missingness, and Holm gates.
+
+**Mandatory opposing passes and audits.** Independent steelman retains only the unresolved slow-versus-fast
+filter hypothesis and notes the near-zero wallet-only/time-only lower bounds for KF120-KF60. Independent
+prosecution explains all positive points as a few marginal wallet substitutions in heavy-tailed HYPE/May
+outcomes, emphasizes nine correlated contrasts layered onto earlier burned searches, and finds no positive
+survives the registered IUT/Holm/missingness/control stack. It also rejects a blanket null because even the
+tightest BLOWUP contrast has MDE 5.46bp, a failed +5 control, failed missingness bound, and Holm q=1. Final
+calibration: **no established filter improvement; no earned method-wide null; standard/static and KF120 are
+indistinguishable at the available resolution.** Architecture and final code audits are CLEAR across
+correctness, statistics, and leakage; focused tests **16 passed**, Ruff clean.
+
+Artifacts: `NESTED_T_FILTER_ARCH.md`, `nested_t_filter.py`, `nested_t_book.py`,
+`data/derived/copy_cohort/nested_t_filter/{rosters.json,book_report.json}`, and audit scopes under
+`audit/nested_t_filter_{arch,code}/`.
+
+### 2026-07-19 — EFRON BOT500: exact pre-fit HFT screen does not fix November; direction unresolved
+
+**Question and construction.** Test the user's basic majors Efron top-30 with one isolated change: before
+each fold's independent empirical-Bayes fit, exclude every otherwise eligible wallet whose all-coin
+formation activity exceeds 500 fills per active day, then refill to 30. The unscreened Efron roster, the
+full eligible-wallet fills/day mask, and the saved direct-t BOT500 roster all reproduced independently in
+every fold (oracle maximum difference zero). Across the eight folds, 11,014 of 370,060 eligible wallet-folds
+were excluded (2.3%–3.5% per fold); screened/unscreened top-30 overlap was 18, 19, 21, 22, 23, 26, 27, and
+30. Both arms used one globally chronological $5k, 8h, 5.5bp capacity stream. Consensus was excluded.
+
+**Absolute and primary results.** The unscreened Efron book is **+16.238bp/entry** (1,745 supported entries,
+$14,167.71) and the screened book is **+12.339bp** (1,819, $11,221.88). The registered
+`E_BOT500−E30` point is therefore **−3.900bp/entry**, crossed global-wallet×paired-7d CI
+**[−15.709,+7.006]**, two-sided p=.435. Only **2/8 folds** (December and May) and **2/4 coins** (ETH and
+SOL) favor the screen; June is exactly tied. Five wallets supply **50.8%** of absolute contrast
+contribution. The point estimate leans adverse, but the interval still admits a benefit larger than the
++5bp care effect.
+
+**The November mechanism is not addressed.** Wallet `0xa1b6…4f04`, responsible for nearly all of the
+previously diagnosed November Efron loss, had only **116.75** all-coin formation fills per active day. It
+therefore remains selected—rank 2 in E30 and rank 1 after the screened refit. The November screen contrast
+is **−23.079bp**. Thus this cutoff cannot be justified as removing that dominant losing wallet; it changes
+other roster members and the Efron population instead.
+
+**Over-null and missingness gates.** MDE80 is **14.274bp** against the +5bp care effect and analytical power
+at +5 is only **15.36%**. The centered injected point moves exactly +5, but its crossed CI
+**[−6.753,+15.881]** crosses zero. Overall missingness is small (0.852% E30, 0.926% BOT500; 0.074pp
+imbalance), but May breaches the registered 2% fold gate at 3.989% and 5.263%. The ±2,000bp constructions
+span an adverse **−39.439bp** to favorable **+31.689bp** point, so the frozen verdict is
+**MISSINGNESS_UNRESOLVED**. This does not earn a helpful, harmful, or method-null conclusion.
+
+**Required opposing passes.** The independent steelman notes higher raw gross mean/median/hit rate for the
+screen, more accepted capacity from fewer raw signals, lower fitted empirical-null sigma in every fold,
+and positive ETH/SOL and December/May substructure. But the registered wallet-fold-equal raw statistic
+reverses (13.11bp screened versus 20.87bp unscreened), showing the raw lean is frequency-weighted rather
+than broad wallet-level corroboration. The independent prosecution emphasizes the adverse registered point,
+2/7 positive nonzero fold signs, concentration, failed +5 recovery, repeated burned folds, and failure to
+remove the November wallet. Reconciliation: **the BOT500 screen has some hypothesis-generating raw-fill and
+capacity-utilization substructure, but the registered effect's direction is unresolved; it is not a live
+positive, not an earned null, and not deployable.**
+
+Architecture plus pre/post correctness, statistics, and leakage audits are CLEAR; focused and inherited
+tests **20 passed**, Ruff clean. Artifacts: `EFRON_BOT500_ARCH.md`, `efron_bot500.py`,
+`data/derived/copy_cohort/efron_bot500/{rosters.json,book_report.json}`, and audit scopes under
+`audit/efron_bot500_{arch,code}/`.
+
+### 2026-07-19 — EFRON BOT500 VISUAL ATLAS: weighting, tails, dependence, and concentration are visible
+
+**Question and artifact.** Build a burned, post-hoc diagnostic atlas of the standard Efron majors top-30
+and the isolated pre-fit BOT500 screen, using only byte-bound frozen inputs and without refitting or changing
+the registered book. The seven-page atlas covers the inference gate, estimator ladder, chronological markout
+paths, return tails, the complete formation cohort, empirical-null assumptions, same-fold arm overlap,
+capacity/missingness, and wallet concentration. Every page is watermarked underpowered,
+missingness-unresolved, and non-deployable; consensus/opinion trading is excluded. The immutable current
+generation is `18cb1290dd9e69db981cdb7617d92553ba3b830292e03cff2ebb7debd1552084`.
+
+**What the pictures add.** The standard Efron absolute point is positive across three differently weighted
+descriptive layers: +20.76bp raw equal-entry gross, +20.87bp p95-winsorized wallet-fold-equal gross, and
++16.24bp capacity-supported net across 1,745 entries. It is positive in 5/8 folds but only 2/4 coins; HYPE
+longs dominate accepted rows, so regime/beta exposure remains a live alternative. The BOT500 arm's apparent
+raw equal-entry advantage (+28.6 versus +20.8bp) reverses under wallet-fold weighting (+13.1 versus +20.9)
+and the executable capacity book (+12.3 versus +16.2), making frequency/tail/composition weighting the most
+visible explanation for that raw lean. These are descriptive diagnostics, not a new absolute-E30 test.
+
+The outcome distributions are strongly non-Gaussian: normal QQ curves bend in both tails, survival extends
+past 1,000bp, and a small fraction of entries supplies a large fraction of absolute return magnitude. The
+formation cross-section is also not `N(0,1)`: fitted empirical-null width is above one in every fold and the
+observed positive tail greatly exceeds the fitted null at large z. Within-wallet lag-1 dependence is positive
+in all folds (roughly 0.06–0.14), so neither the raw daily PnL nor selected-wallet observations are iid. The
+atlas bins mean/volatility only after transforming both coordinates (`log10 SD`, signed
+`log10(1+|mean|)`), avoiding the misleading geometry found and rejected during visual audit.
+
+The 500-fills/day rule removes only 2.3%–3.5% of eligible wallet-folds, but the same-fold arm overlap starts
+at 18/30 and rises to 30/30 by June because the population refit moves the early selection boundary. It does
+not remove the registered November dominant wallet (116.75 fills/day; E30 rank 2, BOT rank 1). Capacity
+acceptance is only about 11%–46%; missingness is localized in May and principally HYPE. Five wallets supply
+50.8% of absolute BOT500-minus-E30 contrast contribution, and leave-k deletion crosses zero repeatedly,
+showing that the adverse point is not diffuse.
+
+**Opposing framing.** The independent steelman calls standard Efron a credible **suggestive** OOS positive:
+its sign survives raw, wallet-fold, and capacity views, has a positive median/hit rate, and recovers after the
+early drawdown. It is not established or deployable because this study's inferential target is BOT500−E30,
+not E30 versus a matched null; there is no absolute-E30 CI/MDE here, coin breadth is weak, and HYPE exposure
+is large. The independent prosecution finds no positive BOT500 case: the registered point and robust raw
+comparison favor E30, fold breadth is 2/8, the dominant wallet survives, concentration is high, May
+missingness can reverse direction, and +5bp power is only 15.4%. Reconciliation is unchanged:
+**standard Efron remains suggestive but unestablished; BOT500 remains missingness-unresolved and
+underpowered, neither positive nor an earned method null.**
+
+Artifacts: `EFRON_BOT500_VISUALS_SPEC.md`, `efron_bot500_visuals.py`,
+`data/derived/copy_cohort/efron_bot500/visuals/latest.json`, and generation
+`data/derived/copy_cohort/efron_bot500/visuals/generation-18cb1290dd9e69db981cdb7617d92553ba3b830292e03cff2ebb7debd1552084/`
+(`index.html`, `diagnostic_atlas.pdf`, seven PNGs, and `visual_manifest.json`). Final focused/inherited tests:
+**26 passed**; Ruff clean. Final immutable-output and visual-statistical-framing audits are **CLEAR**. Early
+rendered generations with distorted hexbin geometry were rejected and are not current.
+
+### 2026-07-19 — WALLET×COIN T30: positive absolute book, unresolved advantage over wallet T30
+
+**Question and construction.** Reopen the burned 2025-11 through 2026-06 majors window for one forensic
+test: replace the pooled-wallet formation statistic with a direct wallet×coin daily t-stat. For every fold,
+form the prior three full months of wallet×coin days, cap each pair-day PnL at $100k of pair-day notional,
+require at least 15 days and positive finite SD, rank the full pair pool globally, and select the top 30
+wallet×coin seats. Copy only each selected wallet's selected coin. Everything downstream matches the
+registered majors book: BTC/ETH/SOL/HYPE, flat taker opens >=$250, fixed $5k, at most one concurrent
+wallet×coin position, $50k per-coin capacity, 8h exit, 5.5bp cost, globally continuous capacity, backward
+ASOF context, and common cutoffs. Consensus/opinion trading and BOT500 filtering are excluded.
+
+**Absolute result.** `PAIR_T30` produced **+13.975 net bp/trade mean**, **-4.587bp median**, **49.35%** net
+hit rate, **4/8 positive/evaluable months**, 1,153 supported trades, and **+$8,056.40** at $5k sizing.
+Per-coin net means were BTC -14.811bp, ETH +2.953bp, HYPE +21.879bp, and SOL -63.026bp. Monthly means were
+-62.949, -55.882, +135.869, -11.152, +49.700, +8.404, +90.775, and -10.353bp. The raw pre-capacity gross
+layer was +31.500bp mean, +12.780bp median, and 51.86% hit rate across 4,177 entries; its registered
+wallet-fold-equal point was +19.343bp. These are descriptive, not an absolute-vs-null inference.
+
+**Primary relative result.** The exact globally continuous `WALLET_T30` control reproduced at +12.529 net
+bp/trade, -7.125bp median, 49.07% hit rate, 5/8 positive months, 1,610 trades, and +$10,085.97. Therefore
+`PAIR_T30-WALLET_T30` is **+1.446bp/trade**, binding crossed wallet/pair 95% CI
+**[-19.837,+20.675]**, two-sided p=.866, MDE80 **27.290bp**, and power at +5bp **6.32%**. Only 3/8 fold
+deltas and 2/4 coin deltas favor pairs. The CI admits economically meaningful benefit and harm, while the
+instrument is blind to the +5bp care effect, so this does **not** earn a method null.
+
+**Missingness, sparsity, and sensitivities.** Overall missingness is low and balanced (0.689% pair versus
+0.617% wallet), but May is 4.908% versus 5.076%, breaching the frozen 2% fold gate; adverse/favorable
+±2,000bp constructions move the delta from -24.700bp to +27.553bp. The verdict is therefore
+`MISSINGNESS_UNRESOLVED`. Of 240 pair fold-seats, **172 (71.7%)** have no forward candidate or supported
+trade; only 6–12 of the nominal top 30 seats trade in each fold, and 86.6% of accepted PAIR_T30 entries are
+HYPE. Top-five absolute contrast contribution is 32.8% by wallet and 30.5% by pair, below the registered
+concentration threshold but not diffuse. Secondary pair constructions lean the same way but do not
+replicate independently: wallet-day-cap T30 is +2.571bp versus wallet T30, and pair E30 is +5.626bp versus
+wallet E30; both are underpowered, fail missingness gates, and have Holm directional q=1.
+
+**Mandatory opposing passes and verdict.** The independent steelman emphasizes the positive absolute book,
+the +1.446bp registered point, slightly better median/hit rate than wallet T30, positive robust raw point,
+low balanced overall missingness, non-dominant concentration, and a plausible ETH coin-specific-skill
+mechanism. The independent prosecution emphasizes selecting 30 extremes from roughly 52k–60k eligible pairs
+per fold, 71.7% zero-forward seats, HYPE/regime dependence, weak fold/coin breadth, negative net median,
+lower total dollars than wallet T30, and missingness bounds that reverse direction. Reconciliation:
+**PAIR_T30 is a positive descriptive absolute backtest, but its advantage over pooled-wallet T30 is
+inconclusive/underpowered and missingness-unresolved; direction unknown. It is neither dead, an earned null,
+a live positive, nor deployable.** This burned reopening cannot promote a favorable result.
+
+Architecture plus final correctness, statistics, leakage, data-integrity, and reproducibility audits are
+**CLEAR**; focused tests **9 passed**, Ruff clean, arithmetic/all-actual reconciliation passed. Artifacts:
+`WALLET_COIN_T30_ARCH.md`, `wallet_coin_t30.py`,
+`data/derived/copy_cohort/wallet_coin_t30/{rosters.json,book_report.json,entries/,panels/}`, and
+`audit/wallet_coin_t30_arch/SCOPE.md`.
+
+### 2026-07-19 — POOLED-WALLET EFRON TOP-30 NOTEBOOK: audited mechanics and descriptive book EDA
+
+**Artifact and method.** Added an executed notebook and static HTML report for the frozen unscreened
+`WALLET_E30` baseline. The notebook does not refit the selector or ingest data: it authenticates the
+governance, roster/code/dependency hashes, all eight entry/meta records, then reconstructs the globally
+chronological capacity book using the audited engine. It fail-closes on exact supported ordered/multiset
+hashes, funnels, missing count, and headline arithmetic. Consensus and the >500-fills/day screen are
+excluded. PnL is credited at the 8-hour exit on the full 242-day UTC calendar including zero-PnL days.
+
+**Descriptive mechanics.** The notebook exactly reproduces 1,745 supported trades, +16.238 net bp/trade,
+-0.275bp median, and +$14,167.71. Exit-day daily metrics are annualized Sharpe **1.321**, Sortino **2.077**,
+maximum drawdown **$8,910.99** or **16.2%** of the realized $55,000 maximum gross exposure, profit factor
+1.155, 234/242 active days, and 5 positive exit-calendar months. Average gross exposure is $12,121.21.
+EDA covers daily equity/drawdown, rolling Sharpe, entry-fold and coin breadth, tails, direction, wallet
+contribution, roster turnover, and the capacity funnel. HYPE contributes +$17,235 while ETH and SOL are
+negative; the net median is slightly negative; top-five wallets are 45.6% of absolute wallet contribution.
+
+**Missingness and framing.** Fifteen of 1,760 capacity-accepted outcomes are unavailable. Applying the
+registered ±2,000 net-bp stress to all accepted entries gives **-0.946 to +33.145bp/trade** and **-$832.29
+to +$29,167.71**, so the absolute sign can flip. The notebook therefore says: **positive descriptive mean,
+but burned and missingness-unresolved; direction not established or deployable.** Independent final
+correctness, statistics/framing, and leakage/provenance audits are **CLEAR**; all 11 cells executed without
+error. Artifacts: `POOLED_WALLET_EFRON_TOP30_NOTEBOOK_SPEC.md` and
+`notebooks/pooled_wallet_efron_top30_backtest.{ipynb,html}`.

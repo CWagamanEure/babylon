@@ -39,7 +39,7 @@ def _ctx_parts(month: int) -> list[str]:
     y, mm = divmod(month, 100)
     nxt = (y + 1) * 100 + 1 if mm == 12 else month + 1
     parts = glob.glob(str(CTX_DIR / f"month={month}" / "day=*" / "ctx.parquet"))
-    parts += [p for p in glob.glob(str(CTX_DIR / f"month={nxt}" / "day=0*" / "ctx.parquet"))
+    parts += [p for p in glob.glob(str(CTX_DIR / f"month={nxt}" / "day=*" / "ctx.parquet"))
               if int(p.split("day=")[1][:8]) <= nxt * 100 + 3]
     return parts
 
