@@ -121,17 +121,19 @@ def _ent_cache(con, month: int):
 MK_COLS = ",".join(f"avg(mk_{h}) AS f_mk_{h}" for h in HOR_MS)
 
 
-def _fold_features(con, fold: int):
+def _fold_features(con, fold: int, coins=MAJORS):
     """Wallet-grain feature table for one fold (formation window), all in SQL."""
-    p = CACHE / f"sweep_feat_{fold}_{SWEEP_V}.parquet"
+    tag = "" if tuple(coins) == tuple(MAJORS) else "_" + "".join(c[0] for c in coins)
+    p = CACHE / f"sweep_feat_{fold}_{SWEEP_V}{tag}.parquet"
     if p.exists():
         return p
+    cf = ",".join(f"'{c}'" for c in coins)
     fm = _formation_months(fold)
     wcd = ",".join(f"'{(_wcd_cache(con, m)).as_posix()}'" for m in fm)
     ents = ",".join(f"'{(_ent_cache(con, m)).as_posix()}'" for m in fm)
     tmp = p.with_suffix(".tmp.parquet")
     con.execute(f"""COPY (
-      WITH wcd AS (SELECT * FROM read_parquet([{wcd}])),
+      WITH wcd AS (SELECT * FROM read_parquet([{wcd}]) WHERE coin IN ({cf})),
       wd AS (
         SELECT wallet, day, SUM(pnl_net) AS pnl, SUM(notl) AS notl,
                SUM(n_fills) AS n_fills, SUM(n_taker) AS n_taker
@@ -195,7 +197,7 @@ def _fold_features(con, fold: int):
         SELECT wallet, -stddev_samp(pr) AS f_rank_stability, COUNT(*) AS n_rank_months
         FROM mrank GROUP BY wallet
       ),
-      ent AS (SELECT * FROM read_parquet([{ents}])),
+      ent AS (SELECT * FROM read_parquet([{ents}]) WHERE coin IN ({cf})),
       cons AS (
         SELECT coin, dir_sign, (ts // 3600000) AS hr, COUNT(DISTINCT wallet) AS nw
         FROM ent GROUP BY 1, 2, 3
@@ -293,13 +295,14 @@ def _fwd_book(ent, wallets_mask_idx):
             "net_usd": float(pnl.sum())}
 
 
-def run():
+def run(coins=MAJORS, out=OUT):
+    cf = ",".join(f"'{c}'" for c in coins)
     con = _connect()
     # build caches
     for m in MONTHS_ALL:
         _wcd_cache(con, m)
         _ent_cache(con, m)
-    featps = {f: _fold_features(con, f) for f in FOLDS}
+    featps = {f: _fold_features(con, f, coins) for f in FOLDS}
     con.close()
 
     # load forward entries per fold (test month, >=$250, finite mk8) once
@@ -308,7 +311,8 @@ def run():
         lc = duckdb.connect()
         d = lc.execute(f"""SELECT wallet, ts, mk_8h FROM
             read_parquet('{(CACHE / f"sweep_ent_{f}_{SWEEP_V}.parquet").as_posix()}')
-            WHERE notional >= {NOTL_MIN_FWD} AND mk_8h IS NOT NULL""").fetchnumpy()
+            WHERE notional >= {NOTL_MIN_FWD} AND mk_8h IS NOT NULL
+              AND coin IN ({cf})""").fetchnumpy()
         lc.close()
         fwd[f] = {"wallet": d["wallet"].astype(str), "ts": _np(d["ts"]), "mk8": _np(d["mk_8h"])}
         print(f"fold {f}: {fwd[f]['mk8'].size:,} forward entries", flush=True)
@@ -395,10 +399,15 @@ def run():
     rep["ranking_by_abs_monotonicity"] = [
         {"feature": f, "mono": v["spearman_monotonicity"], "delta": v["q5_minus_q1_bp"],
          "folds": v["q5_minus_q1_folds_gt0"]} for f, v in ranked]
-    OUT.write_text(json.dumps(rep, indent=1, default=str))
-    print(f"-> {OUT}")
+    rep["config"]["coins"] = list(coins)
+    out.write_text(json.dumps(rep, indent=1, default=str))
+    print(f"-> {out}")
     return rep
 
 
 if __name__ == "__main__":
-    run()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "exhype":
+        run(coins=("BTC", "ETH", "SOL"), out=DERIVED / "tape_metric_sweep_exhype_report.json")
+    else:
+        run()

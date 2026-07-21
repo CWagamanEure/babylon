@@ -1800,3 +1800,64 @@ Ex-202512 sensitivity: +32.9/SR 1.81 — 202512 drags, doesn't flip. **`STRUCTUR
 FROZEN**: gates → 4-feature rank-mean score → top-30 → long-only flat opens ≥$250 → equal-$ (10%/wallet
 cap) → 8h; predictions P1–P4 registered (net>0 expected +15–30bp; long-only ≥ both-sides; structural ≥
 capday; ≥80 entries/mo); ≥6mo forward before any verdict. Burned-fold work on this line CONCLUDES here.
+
+### 2026-07-21 addendum — STRUCTURAL COHORT ATTRIBUTION: drag is NOT wallet-persistent (identity ≈ winner's curse) but IS feature-separable (whale-clip/slow/crowded profile); prereg stays v1.0
+
+**Question (user).** Are the structural cohort's draggers persistently-bad, structurally-different,
+pre-filterable traders? `structural_attribution.py` / `structural_attribution_report.json` +
+`_amendments.json` (descriptive, burned folds).
+
+**Persistence — the premise's identity-level half is REJECTED.** 240 wallet-folds → 169 distinct wallets
+(92 silent on the long book). Of 77 active: 36 draggers (−$1,240) / 41 helpers (+$3,469). Only 12 wallets
+active in ≥2 folds; consecutive-fold contribution sign agreement **57% (n=14 pairs, ≈chance)**, corr +0.28
+(noise-grade). **Repeat draggers: 2; repeat helpers: 7.** 11 of the top-12 draggers were selected in
+exactly ONE fold. Per-wallet drag does not repeat → identity-level exclusion ("ban last month's losers")
+cannot work; at the wallet-identity level the drag IS winner's-curse-shaped noise.
+
+**BUT the group-level structural profile is real and formation-visible.** Dragger vs helper medians (the
+composite score itself is FLAT — 0.822 vs 0.819, at its selection ceiling): draggers are **whales**
+(median formation clip $80k vs $44k; test-month clip $109k vs $40k), **slower** (hold proxy 106 vs 50
+min), **swingier** (formation maxDD $94 vs $38), **more crowded** (entry consensus 370 vs 288), **less
+HYPE** (13% vs 41%), shorter-tilted in test (31% vs 20%), with **weaker formation entry markout (+9.2 vs
++32.4bp)** — within the already-selected cohort, formation mk8 separates even though it can't select at
+pool scale (nested-signal read of the 2026-07-12 verdict). Also lower pct-prof-days (0.69 vs 0.77).
+
+**Candidate feature-level screens quantified (burned, hypothesis-grade):** on the frozen primary
+(long-only N30, +41.5 we / +29.0 net / SR 2.58, 6/8): (A) formation-mk8≥0 gate → +42.6/+21.7/1.47 (7/8);
+(B) **clip≤$100k cap → +56.7/+32.0/2.57 (6/8)**; (C) both → +61.5/+28.3/2.11 (7/8); (D) mk8 tiebreak
+top60→30 → +50.6/+23.8/1.81 (7/8, widens surface to 1,004 entries). **PREREG STAYS v1.0 — no amendment**:
+these gains are exactly the shape the anti-ratchet clause guards (new screens minted from the same burned
+folds post-freeze); variant (B) is TRACKED as a shadow secondary in the forward run (report-only), and
+promotion would require it to beat the primary forward. Consistent priors: whale/notional fragility
+(entry-level shape 2026-07-17), crowding ≠ quality at entry grain, "condition on the side/feature, not
+the seat." Artifacts: structural_attribution.py, structural_attribution_report.json,
+structural_attribution_amendments.json.
+
+### 2026-07-21 addendum — STRUCTURAL PRIMARY WF BACKTEST: headline SR 3.25 but it is a HYPE book (86% of profit); ex-HYPE = weak underpowered positive
+
+Full frozen-spec book (`structural_wf_backtest.json`): long-only N30, 8h, $1k clips, 10%/wallet cap
+(cap active: 770→434 entries, and it HELPS — per-trade net rises to +42.3bp). PRIMARY: **net +42.3bp/tr,
++$1,837, SR 3.25, Sortino 6.76, MDD $216 = 1.7% of $13k peak exposure**, 6/8 months+, robust to 5.5bp
+stress (SR 3.04). **BUT the coin cut is decisive: HYPE = 42% of entries and 86% of profit** (+86.5bp net,
+SR 3.31); **EX-HYPE: +10.4bp net, $263, SR 1.05, Sortino 1.64, 4/8 months** — direction positive, not a
+book. Per-coin: BTC +8.8bp SR 0.80; ETH +14.0 SR 0.93; SOL +12.3 SR 0.30. HYPE 8h field drift +7.6bp
+explains <10% of the HYPE cell — the excess is real selection-on-HYPE-flow in this era, but it is ONE
+COIN, ONE REGIME (listing era; the helpers' hype_share 41% vs draggers' 13% presaged this). Honest read:
+the strategy as frozen is substantially a "copy structural winners ON HYPE" trade; ex-HYPE it is an
+underpowered positive (~+10bp) in the majors-native K30 class. Forward adjudication unchanged; P1–P4
+stand; ADD registered forward cut: report PRIMARY and EX-HYPE separately every read (concentration
+tripwire: HYPE >60% of monthly profit = flag).
+
+### 2026-07-21 addendum — EX-HYPE SWEEP (BTC/ETH/SOL only, selection AND forward): structural axis SURVIVES; the harvestable book does NOT
+
+`tape_metric_sweep_exhype_report.json` + `structural_exhype_composite.json` (descriptive, burned).
+**Atlas:** the structural axis is NOT a HYPE artifact — maxDD d=+7.5 **8/8 folds** (was +9.9), trades/day
++7.7 **8/8** (was +9.6), turnover +5.1 7/8, clip +3.2 6/8, ret_autocorr +2.8 6/8; PnL-level features stay
+anti-monotone (worst-decile −6.3, 0/8). Attenuation ~20–35% but identical ordering and fold consistency.
+**Composite books (BES selection × BES forward, frozen mechanics):** long-only N30 wallet-equal +38.0 BUT
+equal-$ net only **+3.6bp, SR 0.29** (214 entries; the wallet-equal/entry-mean gap = busy wallets' marginal
+entries are weak); both-sides N30 +8.7bp net SR 0.87; N50 long-only −1.0. At realistic 10bp RT taker fees
+all ex-HYPE variants are ≤0. **Read: the structural selection signal generalizes across coins (feature
+level), but its harvestable expression at taker costs was HYPE-regime-specific.** The forward slate's
+honest framing stands: primary book = HYPE-concentrated with tripwire; ex-HYPE = wallet-level signal
+awaiting a cheaper execution path (maker) or a richer regime, not a taker book.
