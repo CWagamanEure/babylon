@@ -1570,3 +1570,233 @@ but burned and missingness-unresolved; direction not established or deployable.*
 correctness, statistics/framing, and leakage/provenance audits are **CLEAR**; all 11 cells executed without
 error. Artifacts: `POOLED_WALLET_EFRON_TOP30_NOTEBOOK_SPEC.md` and
 `notebooks/pooled_wallet_efron_top30_backtest.{ipynb,html}`.
+
+### 2026-07-19 — SAME-COIN DIRECTION POLICY: favorable execution residual, unresolved
+
+**Question and construction.** Diagnose what happens when the frozen pooled-wallet `WALLET_E30` book has
+simultaneous long and short 8-hour sleeves in the same coin. The baseline keeps those as separate virtual
+sleeves: both consume gross capacity and both pay 5.5bp. The comparison arm independently replays the same
+complete 7,919-row pre-capacity stream from empty state, but suppresses a new signal whenever an opposite
+direction is already open in that coin; it never early-closes, crosses, or flips. Exits precede entries at
+timestamp ties, then the wallet×coin, opposite-direction, and coin-cap gates run in that order. Selection,
+rosters, costs, $5k sizing, 8-hour exits, majors, and all other mechanics are unchanged. Consensus and the
+BOT500 screen remain excluded. Exact parent capacity/book/headline parity and NaN/noise outcome-blind shadow
+replays pass.
+
+**Book mechanics.** The virtual baseline is mixed long/short in at least one coin for **9.690%** of the
+fixed wall-clock span and **8.332%** of active coin-time. Its average gross exposure is **$12,121**, versus
+**$11,059** absolute-net, demonstrating real internal offset. The one-side policy makes both mixing measures
+exactly zero. It registers 172 opposite-direction skips, but later freed capacity means accepted entries
+fall by only 85 (1,760→1,675; supported 1,745→1,661). Average gross falls **$585**, while average
+absolute-net rises **$477**, because shorts fall disproportionately (220→162 supported) relative to longs
+(1,525→1,499). This is suppression of hedges and a more directional book, not free execution netting.
+
+**Descriptive result and uncertainty.** `ONE_SIDE_PER_COIN−VIRTUAL_SLEEVES` is **+$2,296.35** total net
+dollars, **+3.586bp/trade**, Sharpe **1.321→1.517**, Sortino **2.077→2.414**, profit factor
+**1.155→1.191**, and median trade **−0.275→+1.696bp**; both arms retain 5 positive exit months and the
+same **$8,910.99** maximum drawdown. The registered paired seven-day block point interval is
+**[−$166.24,+$4,966.90]**, two-sided p=.081. Observed positive-tail MDE80 is **$3,929.45** with only
+**39.92%** power at +$2,500; the negative-tail MDE is $3,461.00 with 56.35% power. Therefore the test does
+not resolve the $2,500 care effect, and the positive point must not be buried as null.
+
+**Missingness and cross-unit combination.** Overall missingness passes (0.836% policy, 0.852% baseline),
+as does the 0.0165pp arm imbalance, but May is **4.03% / 3.99%**, failing the frozen 2% per-fold gate.
+Fourteen missing rows are shared and coupled to cancel; only one baseline-exclusive row creates the
+adverse/favorable point range **+$1,296 to +$3,296**. The conservative missingness CI is
+**[−$2,585,+$6,314]**; binding MDE80 is $4,899 positive/$5,257 negative, power is 31.16%/24.09%, and both
+binding injection controls fail. Fold deltas are 5 positive, 2 negative, 1 tie (exact sign p=.453); coin
+deltas are 2 positive and 2 negative (p=1.0). HYPE contributes **+$2,565**, 112% of the total delta, while
+BTC+ETH+SOL sum negative.
+
+**Mandatory opposing passes and verdict.** The independent steelman emphasizes a mechanism-aligned
+favorable residual: higher dollars despite fewer opportunities, better mean/median/Sharpe, a still-positive
+adverse missing point, 5/7 nonzero folds positive, and improvements concentrated in folds with material
+conflict suppression. The independent prosecution emphasizes whole-arc post-hoc multiplicity, no fresh
+holdout, failed MDE/power/missingness gates, HYPE domination, weak coin breadth, unchanged drawdown/month
+count, and the benign explanation that removing shorts increased long/regime exposure. Reconciliation:
+**underpowered positive execution residual; direction unresolved. It is not established, not a null, never
+suggestive/candidate/deployable, and does not replace the virtual-sleeve baseline.** The machine claim is
+`UNRESOLVED`; positive-promotion and method-null eligibility remain false.
+
+Architecture and pre/post correctness, statistics, and leakage/provenance audits are **CLEAR**; Ruff is
+clean and focused/inherited tests **20 passed**. The existing notebook and HTML were extended and executed
+without errors. Artifacts: `SAME_COIN_DIRECTION_POLICY_ARCH.md`, `same_coin_direction_policy.py`,
+`tests/test_same_coin_direction_policy.py`,
+`data/derived/copy_cohort/same_coin_direction_policy/report.json`, and
+`notebooks/pooled_wallet_efron_top30_backtest.{ipynb,html}`.
+
+### 2026-07-19 — CR<=50 RELATIVE-NOTIONAL FILTER: exact fixed-book identity; selector unactivated
+
+**Question and construction.** Test one user-specified entry veto on the frozen unscreened pooled-wallet
+Efron top-30 book: refuse a candidate whose copied notional exceeds 50 times that wallet's exact continuous
+median majors opening notional over the same strict-prior three formation months. Formation notionals are
+read as `DECIMAL(38,10)` and reproduced by independent Python exact-Decimal and DuckDB widened-Decimal
+oracles; membership uses exact cross multiplication and equality passes. The filter runs before capacity,
+while candidates without a positive prior scale pass through. There was no cutoff sweep. Consensus,
+BOT500, and the same-coin suppression policy are excluded.
+
+**Activation and realized result.** Prior scales exist for **7,774/7,919 candidates (98.17%)**; 145 rows
+pass through. Median CR is **1.001**, p99 **6.696**, maximum kept CR **24.307**. Only **one** candidate
+(0.0126%) exceeds 50: a November HYPE long with CR **96.808**. That row was already ineligible in the
+baseline because the same wallet had an open HYPE sleeve from roughly 64 minutes earlier. Accordingly,
+both arms accept the exact same **1,760** source identities and support the exact same **1,745** outcomes;
+accepted, supported, daily-PnL, and exposure hashes are identical. CR50 therefore reproduces the baseline
+exactly: **+$14,167.71**, **+16.238bp/trade mean**, **-0.275bp median**, Sharpe **1.321**, Sortino
+**2.077**, and 5/8 positive exit months. The registered contrast is **$0 and 0bp/trade**.
+
+**Null-gate accounting.** Observed, adverse-missingness, and favorable-missingness paired points and 95%
+CIs are all exactly **$0 [$0,$0]**; MDE80 is $0 and the +/-$2,500 injections are recovered exactly because
+the arm vectors are identical. All eight fold contrasts and all four coin contrasts are exact ties. All 15
+missing accepted identities are common to both arms and cancel, leaving coupled dollar and mean-bp contrast
+bounds exactly zero. Construction, exact parent parity, independent source oracles, outcome-blind shadows,
+cache seals, and publication-boundary lineage checks pass. The frozen machine claim nevertheless remains
+`UNRESOLVED` because May's 3.99% absolute missing rate breaches the preregistered 2% per-fold gate and burned
+governance forces `method_null_eligible=false`. That generic absolute-arm gate cannot create contrast
+uncertainty when both arms and all missing identities are identical, but the preregistered label is not
+overridden post hoc.
+
+**Mandatory opposing passes and conclusion.** The steelman correctly identifies zero treatment exposure:
+the threshold is an extreme guardrail, the sole qualifying event was capacity-masked, pooled three-month
+medians may dilute coin/regime-specific abnormal size, and 145 unknown-scale rows passed through. Thus the
+test has no power to estimate returns conditional on rejecting an otherwise accepted CR>50 trade; the
+degenerate MDE is proof of path identity, not power for that unobserved treatment. The prosecution finds no
+positive to carry: every executable identity and metric is equal, every cross-unit contrast ties, the
+threshold lies in an empty empirical gap, and the folds/rule are burned within a heavily inspected arc.
+Reconciliation: **the exact CR>50 refusal rule was non-binding and had exactly no realized effect on this
+frozen executable book. Relative-size filtering when it actually binds remains unresolved; this is not
+evidence that the broader idea is dead, and it is not positive, suggestive, candidate, or deployable.**
+
+Architecture and pre-outcome correctness, statistics, and leakage audits are **CLEAR** after closing a
+publication-lineage TOCTOU check, production CR-value shadow assertion, and inherited arm-label wiring bug;
+the independent post-run positive-steelman, positive-prosecution, and 40-check provenance audits are also
+**CLEAR**. Targeted and inherited tests **30 passed**, Ruff clean. Artifacts: `NOTIONAL_CR50_FILTER_ARCH.md`,
+`notional_cr50_filter.py`, `tests/test_notional_cr50_filter.py`,
+`data/derived/copy_cohort/notional_cr50_filter/{formation_scales.json,formation_scales.meta.json,report.json}`,
+and the updated executed `notebooks/pooled_wallet_efron_top30_backtest.{ipynb,html}`.
+
+### 2026-07-21 — TAPE CAPDAY + FILTER GRID: external "filters rescue capday top-30" claim does NOT reproduce on majors; selector reconciles tape↔lake exactly
+
+**Question.** The user's other repo (incerto = serving layer; claim upstream of it) reports capday top-30
+(trailing 3-mo $100k-capped daily net PnL / active day, incerto `signals_ddl.py` definition frozen verbatim)
++ next-month copy + fixed markout exit is "very successful **after filters** that remove draggers." Recreated
+on the LOCAL node_fills majors tape (first majors study computing selection AND entries from the tape itself,
+not the Reservoir lake). Arch `TAPE_CAPDAY_FILTER_ARCH.md` v1.1 (4-agent audit folded: common-winsor
+contrasts, paired t7+wallet-cluster deltas, FRTS rank-then-screen arm, LIQ_ORIGIN own-side predicate,
+oid-grouped entries, ts-based boundaries, `audit/tape_capday_filter_arch/`). 8 burned folds 202511–202606;
+8 pre-declared arms (F0 baseline; F1 bot<500 fills/day, F2 taker≥0.10, F3 dust med≥$250, F4 own-liq=0,
+F5 one-day≤50%, FALL=∧, FRTS) × {1,4,8,24}h; primary FALL@8h; care-about +5bp. `tape_capday_filter.py`,
+report `tape_capday_filter_report.json` (code_commit stamped; 8GB-RAM/1GB-disk-safe semi-join build).
+
+**Result — the claim does not reproduce on majors.** PRIMARY FALL@8h robust wallet-fold-equal **−0.1bp
+CI[−33.7,+34.4]**; filter effect FALL−F0@8h **+5.6 [−41.1,+52.4]** (t=0.29). Equal-$1k books NET-NEGATIVE
+and the filtered book is WORSE: F0@8h −10.4bp (SR −0.80), FALL@8h **−17.7bp (SR −1.42)**. Grid at the null
+rate: 1/32 cells CI-clear (F2_MAKER@24h **−87.9 [−172.5,−5.2]** — the one clear cell says the maker screen
+HURTS) vs 1.6 expected; BH min q 0.167. Mechanism incoherent for a dragger story on majors: bot- and
+dust-screened wallets had POSITIVE forward mk8 (+63.3/+45.5bp — the screens removed helpers), corroborating
+2026-07-17 attribution ("Book M is NOT a dragger story"). Prosecutor pass (separate agent) killed every
+positive lean: the 4h "cluster" (F0/F4/F5/FRTS +11–14) is ONE fold's +146.43bp identical-to-float-precision
+across nested arms (F0@4h ex-202603 ≈ −4.7); FRTS≈F0 (fold deltas exactly 0 in 6/7); FALL−F0@24h +56.9
+[−11.5,+125.4] is baseline-crash (F0@24h −57.3; FALL@24h itself −23.2) + one thin fold (202602 +192, overlap
+6/30), wallet-boot CI [−34.1,+101.2], MDE 94 ≫ point — logged as direction-unknown curiosity only.
+
+**Symmetric honesty (steelman pass, separate agent) — this is NOT a powered negative and does NOT demote the
+prior lineage.** MDE 39–98bp vs +5 care-about at every cell (blind by construction, declared a priori — no
+NULL vocabulary permitted); every CI contains the prior +16.7 dollar-book and +29.0 majors-native points; the
+negative equal-$ books REPLICATE the ledger's own "equalizing destroys the edge" measurement (equal-per-entry
++16.7→−3.1 precedent), and wallet-equal is the estimand whose sign the 2026-07-14 correction ruled noise.
+Verdict scope: **method-scoped adverse-direction descriptive on the deployable filtered book; filter overlay
+UNRESOLVED; prior capday-lineage underpowered positive UNCHANGED.**
+
+**Genuine positive contribution — selector reconciliation.** Tape-built capday top-30 = the frozen-133 lake
+cohort **30/30 in every fold** (F0∩frozen133=30 ×8): two independent data paths (node_fills tape vs Reservoir
+lake wcd) produce the same wallets under the incerto-frozen metric — end-to-end selector validity, and the
+incerto-certified definition is confirmed implementable from raw fills alone. Funnels: pool 41–50k eligible
+wallets/fold; followable surface remains the binding constraint (202 F0 entries / 8 months; 19 robust wf
+units; fold 202605 zero evaluable F0 entries; 202606 right-censored, ctx ends 2026-06-29).
+
+**Read-through for the external claim:** whatever the other repo measured, on the majors venue under
+this repo's leakage-clean accounting it is not visible: primary flat, deployable book adverse, no BH
+survivor. Escapes that remain honest: the claim may live on ALTS (invisible on this tape — the ledger's
+alt line already found the alt copy edge real-but-unharvestable at taker costs), on a gross/in-sample
+accounting, or at a tuned horizon. Adjudicator stays the forward paper trader; no new burned-fold looks.
+Artifacts: `TAPE_CAPDAY_FILTER_ARCH.md`, `tape_capday_filter.py`, `tape_capday_filter_report.json`,
+`audit/tape_capday_filter_arch/FINDINGS.md`; steelman + prosecutor recorded this session.
+
+### 2026-07-21 addendum — DRAGGER ANATOMY: the dragger "archetype" is the SHORT SIDE, not a wallet cluster; long-only overlay registered
+
+**Question.** Locate the archetype dragging the tape-capday F0 top-30 down (the pre-declared screens removed
+helpers, so the draggers sit INSIDE the cohort). `tape_capday_draggers.py` / `tape_capday_draggers_report.json`
+— POST-HOC DESCRIPTIVE on burned folds; median cohort wallet has 2 evaluable entries, so wallet-identity
+profiles are noise-dominated and were treated only as pointers.
+
+**Wallet-level pass (weak):** drag is BROAD, not concentrated — 26/43 pooled wallets negative, worst wallet
+only 17.4% of total drag, 5 wallets for half (contrast the alt book's single-bot dragger story). No formation
+feature separates draggers from helpers (nd/metric/fills-day/taker/conc all overlap); the only flip-cuts were
+outcome-circular (hit<45%) or entry-composition proxies (short-share, HYPE-share) — which pointed to the real
+axis:
+
+**Entry-level decomposition (the finding):** the F0 book's 8h drag is DIRECTIONAL. Raw: LONG +31.6bp (5/6
+folds>0, 30 wallets) vs SHORT −48.0bp (1/8, 25 wallets); within dual-side wallets short<long 8/12; worst cell
+HYPE-short −159.8 (n=19). **Beta exonerated and the effect sharpened:** sample drift is NEGATIVE for
+BTC/ETH/SOL (−7.5/−10.6/−10.8bp per 8h; HYPE +7.6) so shorts were beta-HELPED; field-adjusted (mk8 −
+dir·coin×fold drift): LONG **+48.7 [−9.5,+86.0]** (5/6 folds), SHORT **−55.6 [−107.4,−28.4] — wallet-cluster
+CI excludes 0**, 1/8 folds. The cohort's longs beat the field; their shorts are anti-predictive. Long-only
+equal-$1k book: net +29.0bp/trade (n=102, ~13 entries/mo, +$296/8mo at $1k clips).
+
+**Honesty:** post-hoc cut discovered on burned folds (direction was 1 axis of a small pre-listed set, but the
+CI-excl-0 on shorts is still a discovery, not a registered result); tiny n; 202605 missing. NOT a burned-fold
+edge claim. **REGISTERED FORWARD RULE (entry-level, ex-ante, no new selector): LONG-ONLY overlay — copy only
+`Open Long` flat opens on the capday/majors book; a-priori prediction: overlay ≥ baseline by ~30–50bp/trade
+gross.** Short-FADE (taking the other side) is noted as hypothesis-grade only — one more sign-flip away from
+the data than exclusion, and not registered. Consistent priors in the ledger: the majors book is a
+winners'-book (2026-07-17 attribution), and the archetype lesson generalizes as "condition on the SIDE, not
+the seat." Artifacts: `tape_capday_draggers.py`, `tape_capday_draggers_report.json` (§direction_decomposition).
+
+### 2026-07-21 — METRIC SWEEP ATLAS (user-directed, exploratory): PnL-level features are ANTI-predictive at pool scale; structural features (lowDD/activity/turnover/clip) are the monotone axis; composite top-30 = +20.4bp we / SR 1.74 (descriptive)
+
+**Design.** `tape_metric_sweep.py` / `tape_metric_sweep_report.json` (+`_composite.json`): 32 formation
+features × quintile buckets over the FULL eligible pool (~42-50k wallets/fold, nd≥15), walk-forward to
+next-month copy performance (flat opens ≥$250, 8h mk, net 2.6bp; wallet-fold-equal + equal-$1k Sharpe/
+Sortino per bucket), 8 folds. USER-DIRECTED EXPLORATORY on burned folds — screening atlas, NOT evidence;
+no multiplicity control by design. Month-grain caches (wcd + all-wallet 8-horizon entry markouts).
+Proxies documented (hold=open→next-close gap; leave-best-DAY-out; maxDD raw $, scale-confounded).
+
+**Headline structure (per-fold q5−q1 wallet-equal delta = the WF quantity; pooled-bucket view can
+Simpson-flip via cross-fold wallet pooling — both stored):**
+- **PnL-LEVEL features are ANTI-monotone at pool scale:** worst_decile_pnl d=−9.1 (0/8 folds>0!),
+  median_daily_pnl −7.0 (1/8), pct_prof_days −6.1 (1/8), consistency −5.4, leave_best_coin −4.3 (0/8).
+  Broad-pool recent PnL levels mean-REVERT for a copier. (Does not contradict the top-30 capday tail —
+  quintiles ≠ extreme tail — but explains why PnL-ranking alone struggles.)
+- **STRUCTURAL features are the monotone axis:** max drawdown (smaller better) d=+9.9 **8/8 folds**,
+  q5 Sharpe +0.78 vs q1 −1.48; trades_per_active_day +9.6 **8/8**; turnover +8.2 (7/8); median entry
+  notional +5.4 (7/8); ret_autocorr +3.7 (7/8). Q5 cells are the only positive-Sharpe cells in the atlas.
+- Formation markout: pooled-bucket slope negative (Simpson) but per-fold deltas mildly positive
+  (mk8 d=+2.2, 7/8) — weak either way at quintile grain, consistent with the 2026-07-12 "markout can't
+  ID wallets" verdict. Degenerate cells (maker_share q1, uniqueness, frac_months_prof, cap_sensitivity)
+  = discrete-mass quantile collapse; noted, need custom bins if pursued.
+- Pool level: average eligible wallet's copy markout ≈ −5 to −8bp we (the field is bad; selection is
+  about escaping it).
+
+**Composite (post-atlas, hypothesis-grade):** mean percentile of {−maxDD, +trades/day, +turnover,
++med_entry_notl} — NO PnL feature. Quintile monotone 7/8 folds (q5−q1 +6.1bp avg); q5 (≈18k wallets)
+net +0.9bp SR +0.60 — the only positive-net quintile-scale cell. **Composite TOP-30: wallet-equal
++20.4bp, net +10.7bp/trade, SR 1.74, Sortino 2.70, n=1,178 entries / 88 wallets, 6/8 folds positive —
+~6× the capday top-30's followable surface** (structural selection picks active, followable wallets by
+construction). Caveat: composite chosen AFTER seeing the atlas on the same folds (selection-on-selection);
+fold 202512 negative both views. Candidate forward arm: "structural top-30" (± long-only overlay per the
+dragger addendum) alongside majors-native and capday arms. Artifacts: tape_metric_sweep.py,
+tape_metric_sweep_report.json, tape_metric_sweep_composite.json.
+
+### 2026-07-21 addendum — STRUCTURAL TOP-N KNIVES + FREEZE: all four features load-bearing; N=30; long-only stacks; spec FROZEN
+
+Final descriptive knives (`structural_knives.py` / `structural_knives_report.json`, burned folds) before
+the freeze: **Gates help** (metric_cap>0 ∧ fills/day<1000: we +20.4→+26.6, SR 1.74→1.99, 7/8 folds).
+**LOFO — every feature earns its seat:** drop maxDD → wallet-equal collapses +26.6→+1.3; drop activity →
+SR 1.24; drop turnover → net +3.3; drop clip → net +1.6. Full-4 retained. **N-sweep:** N30 best (SR 1.99);
+N50 = 8/8 fold-positive at lower point (+19.4/SR 1.49, secondary); N20 underdiversified; N75/100 dilute
+(confirms "tighter beats wider" on this selector too). **Long-only overlay stacks as the dragger addendum
+predicted:** N30 long-only we **+41.5, net +29.0, SR 2.58** (770 entries, 77 wallets, 6/8 folds).
+Ex-202512 sensitivity: +32.9/SR 1.81 — 202512 drags, doesn't flip. **`STRUCTURAL_TOPN_PREREG.md` v1.0
+FROZEN**: gates → 4-feature rank-mean score → top-30 → long-only flat opens ≥$250 → equal-$ (10%/wallet
+cap) → 8h; predictions P1–P4 registered (net>0 expected +15–30bp; long-only ≥ both-sides; structural ≥
+capday; ≥80 entries/mo); ≥6mo forward before any verdict. Burned-fold work on this line CONCLUDES here.
