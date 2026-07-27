@@ -1,0 +1,133 @@
+strategy_version: wallet_markout_router_v2
+status: NOT pre-registered — discovery-selected candidate awaiting holdout
+written_at: "2026-07-26"
+supersedes: smart_burst_follow_v1        # rejected in notebook 04
+selected_in: 07_router_calibration_and_score_mechanism.ipynb (section 10)
+decision: FREEZE D0 MEAN-ONLY SCORE
+implementation: strategy_lib.py (signal), routing_lib.py (execution), score_lib.py (plumbing)
+
+# ----------------------------------------------------------------- signal
+signal:
+  score_name: trailing_short_horizon_wallet_markout
+  score_definition: >
+    Per wallet, the trailing three-calendar-month MEAN of 30-minute markouts on the wallet's
+    net-buyer days. No t-statistic standardization: notebook 07 showed the sd/sqrt(n) term adds
+    no stable incremental event predictiveness (residual component beta CI [-20, +386] bps).
+    This is NOT a probability and NOT a calibrated informedness measure.
+  trailing_history_months: 3
+  wallet_eligibility: ">= 100 taker fills on qualifying net-buyer days within the window"
+  vintages: monthly, walk-forward; all score inputs strictly precede the signal timestamp
+  leakage_guard: >
+    The trailing window ends one day before the vintage opens, so no markout used in a score
+    completes after the first signal that score can act on.
+  unscored_wallets: >
+    Remain unscored. They are excluded from the event-quality denominator and never treated as
+    low quality; their share of buy flow is reported separately as coverage.
+
+event:
+  universe: frozen burst detector (see burst_detector below)
+  episode: anchored 8h — the first event of a coin opens [t, t+8h)
+  entry_event: FIRST eligible event of each episode only
+  eligibility: positive burst, top-decile-cohort share >= 5%, signed imbalance >= +0.5,
+    bottom-decile cohort flat
+  signal_window: "[t-15m, t], taker buy notional of wallets active in that window"
+
+event_quality:
+  step_1: convert eligible wallet scores to cross-sectional percentiles using the vintage
+    available at the event
+  step_2: buy-notional-weighted mean score percentile over SCORED buyers
+  step_3: report scored-flow coverage separately
+
+router:
+  type: trailing empirical CDF
+  history: all strictly prior eligible first-signal events, expanding window
+  min_history_events: 100          # no risk taken before this many prior events exist
+  mapping: "u = trailing_empirical_CDF(event_quality); w = clip(2u - 1, -1, 1)"
+  interpretation:
+    high_percentile: long
+    low_percentile: short
+    middle: low exposure
+
+# ----------------------------------------------------------------- execution
+execution:
+  entry: one minute after the signal timestamp
+  hold_minutes: 240
+  slots: 8
+  sizing: capital/slots scaled by |w|; never levered above one slot
+  costs: {fee_bps_per_side: 4.5, slip_bps_per_side: 2.0,
+          half_spread_bps_by_liquidity_tercile: [20, 8, 4]}
+  neutralization: BTC hedge, beta = 1 (frozen assumption)
+  dynamic_exits: none
+  discretionary_exclusions: none
+
+burst_detector:
+  parameters: {net_small_clip_flow_multiple: 25, min_usd: 3000, min_distinct_wallets: 8,
+               small_clip_usd: 1000, bucket_minutes: 5, norm: trailing 7-day median}
+  frozen_artifact: data/burst_events.parquet
+  KNOWN_GAP: >
+    The detector's parameters are frozen and documented, but its implementing code is not a
+    standalone module — the event table is a frozen artifact produced during earlier research.
+    A live deployment must re-implement the detector from these parameters and reconcile it
+    against the frozen artifact before any signal is acted on. This is a prerequisite for the
+    shadow run, not an optional cleanup.
+
+# ----------------------------------------------------------------- discovery evidence
+discovery:
+  sample: 2025-11-02 .. 2026-07-22 (263 calendar days, 219 trading days)
+  first_signal_episodes: 769
+  events_active_after_calibration_burn_in: 669
+  portfolio_net_bps_per_day: 6.43
+  portfolio_ci: [-2.26, 16.98]          # stationary bootstrap, mean 5-day blocks
+  sharpe: 1.67
+  max_drawdown_bps: 541
+  net_per_trade_bps: 20.3
+  gross_per_trade_bps: 35.9
+  leave_one_month_out_min_bps: 10.7
+  leave_one_coin_out_min_bps: 15.3
+  event_regression_beta_bps: 558.1
+  event_regression_ci: [198.6, 970.1]   # corrected bootstrap, day multiplicity preserved
+  identity_placebo:
+    per_trade_increment_bps: 36.8
+    per_trade_p: 0.0066                 # (1 + #{placebo >= real}) / (B + 1), B = 150
+    portfolio_increment_bps_per_day: 11.91
+    portfolio_p: 0.0164                 # B = 60
+  CAVEAT: >
+    The discovery-period stateful portfolio confidence interval INCLUDES ZERO. The evidence is
+    economically coherent and survives a wallet-identity placebo, but the strategy is not
+    statistically established on the discovery sample and is not validated.
+
+interpretation:
+  - The score does NOT strongly predict unconditional future wallet-level 4h PnL
+    (Spearman 0.006-0.019 across every wallet-level target tested).
+  - It DOES order event outcomes conditional on burst participation.
+  - Exact wallet identity adds information beyond measured trading archetype while the strict
+    archetype-matched placebo remains significant.
+  - The mechanism is observational, not causally proven.
+
+# ----------------------------------------------------------------- forward test
+holdout:
+  start: "2026-07-23"
+  min_episodes: 300
+  checkpoints: ["2026-09-15", "2026-10-15", "2026-11-15", "2026-12-15"]
+  checkpoint_rule: >
+    Monthly thereafter if needed. Formal evaluation occurs at the FIRST predeclared checkpoint
+    on or after 300 eligible first-signal episodes have accrued. 2026-09-15 is an operational
+    checkpoint, not automatically the evaluation date. The 300-episode requirement may not be
+    lowered.
+  inspectable_before_evaluation: [episode counts, pipeline health, schema integrity, latency,
+                                  missing-data rates, score freshness, coverage]
+  forbidden_before_evaluation: [cumulative PnL, mean return, Sharpe, hit rate, trade-level
+                                outcomes, long/short performance, coin attribution,
+                                month attribution]
+  primary_test: "H0: mean net calendar-day portfolio return <= 0"
+  test_settings:
+    inactive_days: included as zero
+    simulator: the frozen stateful simulator in routing_lib.py
+    inference: stationary bootstrap, mean geometric block length 5 days
+    size: one-sided 5%
+    reruns: none — no alternative bootstrap settings after observing the holdout
+  outcomes: [Passed, Rejected, Inconclusive]
+  single_test: true
+
+code_hashes_file: strategy_code_hashes.json
+frozen_degrees_of_freedom_file: data/bakeoff_out/frozen_degrees_of_freedom.csv
